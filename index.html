@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Foggy Mirror</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="app" aria-label="Foggy Mirror application">
+      <video id="camera" playsinline muted aria-hidden="true"></video>
+      <canvas id="mirror" aria-label="Live foggy mirror"></canvas>
+
+      <section class="permission-panel" id="permissionPanel" aria-live="polite">
+        <h1>Foggy Mirror</h1>
+        <p>Allow camera and microphone access to turn your webcam into a steamy mirror. Blow into the mic to fog the glass, then draw or wipe it clear.</p>
+        <button id="startButton" class="primary-button" type="button">Start mirror</button>
+        <p class="small" id="permissionHint">The app asks for webcam and microphone permissions on startup.</p>
+      </section>
+
+      <div class="topbar" aria-label="Mirror controls">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span>Foggy Mirror</span>
+        </div>
+        <div class="meter" aria-label="Breath input level">
+          <span id="breathLabel">Listening</span>
+          <span class="meter-track"><span id="breathMeter"></span></span>
+        </div>
+      </div>
+
+      <div class="toolbar" aria-label="Drawing tools">
+        <button class="tool-button is-active" id="fingerTool" type="button" aria-pressed="true" data-tooltip="Index finger eraser">
+          <span aria-hidden="true">✦</span>
+          <span>Finger</span>
+        </button>
+        <button class="tool-button" id="palmTool" type="button" aria-pressed="false" data-tooltip="Palm wipe">
+          <span aria-hidden="true">◌</span>
+          <span>Palm</span>
+        </button>
+        <button class="icon-button" id="fogButton" type="button" aria-label="Add fog" data-tooltip="Add fog">+</button>
+        <button class="icon-button" id="clearButton" type="button" aria-label="Clear mirror" data-tooltip="Clear mirror">⌫</button>
+      </div>
+
+      <button class="shutter" id="shutterButton" type="button" aria-label="Take snapshot">
+        <span aria-hidden="true"></span>
+      </button>
+
+      <p class="status" id="status" aria-live="polite">Starting camera and microphone…</p>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
