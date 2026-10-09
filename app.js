@@ -6,13 +6,13 @@ const permissionPanel = document.getElementById("permissionPanel");
 const startButton = document.getElementById("startButton");
 const permissionHint = document.getElementById("permissionHint");
 const statusEl = document.getElementById("status");
-const breathMeter = document.getElementById("breathMeter");
-const breathLabel = document.getElementById("breathLabel");
 const shutterButton = document.getElementById("shutterButton");
-const fingerTool = document.getElementById("fingerTool");
-const palmTool = document.getElementById("palmTool");
-const fogButton = document.getElementById("fogButton");
-const clearButton = document.getElementById("clearButton");
+const mirrorControls = document.getElementById("mirrorControls");
+const brushSize = document.getElementById("brushSize");
+const readouts = document.getElementById("readouts");
+const flash = document.getElementById("flash");
+window.lucide?.createIcons();
+let statusTimer;
 
 const fog = document.createElement("canvas");
 const fogCtx = fog.getContext("2d", { willReadFrequently: false });
@@ -26,6 +26,12 @@ const state = {
   height: 0,
   dpr: Math.min(window.devicePixelRatio || 1, 2),
   brush: "finger",
+  brushRadius: 15,
+  running: false,
+  starting: false,
+  spaceDown: false,
+  debug: false,
+  fps: 0,
   pointerDown: false,
   lastPoint: null,
   audioReady: false,
@@ -42,7 +48,10 @@ const state = {
 };
 
 function setStatus(message) {
+  clearTimeout(statusTimer);
   statusEl.textContent = message;
+  statusEl.classList.remove("is-hidden");
+  statusTimer = setTimeout(() => statusEl.classList.add("is-hidden"), 2600);
 }
 
 function fitCanvases() {
@@ -173,11 +182,13 @@ function rebuildFogTexture() {
 }
 
 async function startMirror() {
-  permissionHint.textContent = "Requesting camera and microphone access…";
-  setStatus("Requesting camera and microphone…");
+  if (state.starting || state.running) return;
+  state.starting = true;
+  startButton.disabled = true;
+  permissionHint.textContent = "Opening camera and microphone...";
 
   try {
-    state.stream = await navigator.mediaDevices.getUserMedia({
+    if (!state.stream) state.stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: "user",
         width: { ideal: 1280 },
@@ -193,14 +204,45 @@ async function startMirror() {
     video.srcObject = state.stream;
     await video.play();
     state.videoReady = true;
-    setupAudio(state.stream);
+    if (!state.audioReady) setupAudio(state.stream);
+    await state.audioContext?.resume();
+    state.running = true;
+    state.lastTime = performance.now();
     permissionPanel.classList.add("is-hidden");
-    setStatus("Blow into the mic to fog the mirror. Drag to write; use Palm for broad wipes.");
+    mirrorControls.hidden = false;
+    canvas.focus({ preventScroll: true });
+    permissionHint.textContent = "";
+    setStatus("Ready");
   } catch (error) {
+    state.stream?.getTracks().forEach((track) => track.stop());
+    state.stream = null;
+    state.videoReady = false;
+    state.audioReady = false;
+    state.audioContext?.close().catch(() => {});
+    state.audioContext = null;
+    state.analyser = null;
     permissionPanel.classList.remove("is-hidden");
-    permissionHint.textContent = "Permission was blocked or unavailable. You can retry after enabling camera and microphone access.";
-    setStatus(`Could not start media: ${error.message}`);
+    permissionHint.textContent = `Camera and microphone unavailable (${error.name}). Allow access in your browser, then try Start again.`;
+  } finally {
+    state.starting = false;
+    startButton.disabled = false;
   }
+}
+
+function returnToStart() {
+  if (!state.running) return;
+  state.running = false;
+  state.spaceDown = false;
+  state.pointerDown = false;
+  state.lastPoint = null;
+  state.debug = false;
+  readouts.hidden = true;
+  mirrorControls.hidden = true;
+  state.fogAmount = 0.22;
+  seedFog();
+  permissionPanel.classList.remove("is-hidden");
+  statusEl.classList.add("is-hidden");
+  startButton.focus({ preventScroll: true });
 }
 
 function setupAudio(stream) {
@@ -299,7 +341,7 @@ function drawWetEdge(point, radiusCss) {
 }
 
 function strokeTo(point) {
-  const radius = state.brush === "palm" ? 82 : 13;
+  const radius = state.brush === "palm" ? 82 : state.brushRadius;
   const last = state.lastPoint || point;
   const dx = point.x - last.x;
   const dy = point.y - last.y;
@@ -353,7 +395,6 @@ function drawMirroredVideo(targetCtx) {
 
     targetCtx.translate(state.width, 0);
     targetCtx.scale(-1, 1);
-    targetCtx.filter = "contrast(0.92) saturate(0.82) brightness(0.9)";
     targetCtx.drawImage(video, state.width - x - drawWidth, y, drawWidth, drawHeight);
     targetCtx.filter = "none";
   }
@@ -384,17 +425,19 @@ function drawMirrorSheen(targetCtx) {
 }
 
 function render(time) {
+  requestAnimationFrame(render);
+  if (!state.running) return;
   fitCanvases();
   const elapsed = Math.min(48, time - state.lastTime);
   state.lastTime = time;
 
   const breath = readBreathLevel();
   state.smoothedBreath += (breath - state.smoothedBreath) * 0.18;
-  breathMeter.style.width = `${Math.round(state.smoothedBreath * 100)}%`;
-  breathLabel.textContent = state.smoothedBreath > 0.38 ? "Fogging" : "Listening";
+  state.fps += (1000 / Math.max(1, elapsed) - state.fps) * 0.08;
+  if (state.debug) readouts.textContent = `mic ${state.smoothedBreath.toFixed(3)}  ${state.smoothedBreath > 0.34 ? "FOGGING" : "quiet"}\naudio ${state.audioContext?.state || "unavailable"}  ${Math.round(state.fps)} fps`;
 
-  if (state.smoothedBreath > 0.34) {
-    const strength = Math.min(1, (state.smoothedBreath - 0.28) * 1.7);
+  if (state.spaceDown || (state.smoothedBreath > 0.34 && !state.pointerDown)) {
+    const strength = state.spaceDown ? elapsed / 32 : Math.min(1, (state.smoothedBreath - 0.28) * 1.7);
     state.fogAmount = Math.min(0.9, state.fogAmount + strength * elapsed * 0.00018);
     addFog(strength * 0.18, state.width * randomRange(0.35, 0.65), state.height * randomRange(0.28, 0.7), Math.max(state.width, state.height) * 0.92);
   } else if (Math.random() < 0.012) {
@@ -408,22 +451,10 @@ function render(time) {
   ctx.globalCompositeOperation = "source-over";
   ctx.drawImage(fog, 0, 0);
   ctx.restore();
-  drawMirrorSheen(ctx);
-
-  requestAnimationFrame(render);
-}
-
-function setBrush(brush) {
-  state.brush = brush;
-  const isFinger = brush === "finger";
-  fingerTool.classList.toggle("is-active", isFinger);
-  palmTool.classList.toggle("is-active", !isFinger);
-  fingerTool.setAttribute("aria-pressed", String(isFinger));
-  palmTool.setAttribute("aria-pressed", String(!isFinger));
-  setStatus(isFinger ? "Finger mode: drag to write through the fog." : "Palm mode: drag broad soft wipes across the glass.");
 }
 
 function captureSnapshot() {
+  if (!state.running) return;
   if (state.fogDirty) rebuildFogTexture();
 
   const output = document.createElement("canvas");
@@ -432,17 +463,20 @@ function captureSnapshot() {
   const outputCtx = output.getContext("2d", { alpha: false });
   drawMirroredVideo(outputCtx);
   outputCtx.drawImage(fog, 0, 0);
-  drawMirrorSheen(outputCtx);
 
   const link = document.createElement("a");
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   link.download = `foggy-mirror-${timestamp}.png`;
   link.href = output.toDataURL("image/png");
   link.click();
+  flash.classList.remove("pop");
+  void flash.offsetWidth;
+  flash.classList.add("pop");
   setStatus("Snapshot saved as a PNG.");
 }
 
 canvas.addEventListener("pointerdown", (event) => {
+  if (!state.running) return;
   state.pointerDown = true;
   canvas.setPointerCapture(event.pointerId);
   const oldBrush = state.brush;
@@ -474,19 +508,44 @@ canvas.addEventListener("pointercancel", () => {
 });
 
 startButton.addEventListener("click", startMirror);
-fingerTool.addEventListener("click", () => setBrush("finger"));
-palmTool.addEventListener("click", () => setBrush("palm"));
-fogButton.addEventListener("click", () => {
-  addFog(0.8);
-  setStatus("Added a fresh layer of condensation.");
-});
-clearButton.addEventListener("click", () => {
-  maskCtx.clearRect(0, 0, state.width, state.height);
-  markFogDirty();
-  setStatus("The mirror is clear. Blow into the mic or tap + to fog it again.");
+brushSize.addEventListener("input", () => {
+  state.brushRadius = Number(brushSize.value);
 });
 shutterButton.addEventListener("click", captureSnapshot);
 window.addEventListener("resize", fitCanvases);
+window.addEventListener("keydown", (event) => {
+  if (!state.running || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (event.key === "Escape") { returnToStart(); return; }
+  if (event.target.closest("button, input, a")) return;
+  if (event.code === "Space") {
+    event.preventDefault();
+    state.spaceDown = true;
+  } else if (!event.repeat) {
+    switch (event.key.toLowerCase()) {
+      case "c":
+        maskCtx.clearRect(0, 0, state.width, state.height);
+        markFogDirty();
+        break;
+      case "s": captureSnapshot(); break;
+      case "d":
+        state.debug = !state.debug;
+        readouts.hidden = !state.debug;
+        break;
+    }
+  }
+});
+window.addEventListener("keyup", (event) => {
+  if (event.code === "Space") state.spaceDown = false;
+});
+window.addEventListener("blur", () => {
+  state.spaceDown = false;
+  state.pointerDown = false;
+  state.lastPoint = null;
+});
+window.addEventListener("pagehide", () => {
+  state.stream?.getTracks().forEach((track) => track.stop());
+  state.audioContext?.close().catch(() => {});
+});
 
 if (!navigator.mediaDevices?.getUserMedia) {
   permissionHint.textContent = "This browser does not support camera and microphone access.";
@@ -495,5 +554,4 @@ if (!navigator.mediaDevices?.getUserMedia) {
   fitCanvases();
   seedFog();
   requestAnimationFrame(render);
-  startMirror();
 }
