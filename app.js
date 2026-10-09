@@ -1,51 +1,42 @@
+"use strict";
+
 const video = document.getElementById("camera");
 const canvas = document.getElementById("mirror");
 const ctx = canvas.getContext("2d", { alpha: false });
-
 const permissionPanel = document.getElementById("permissionPanel");
 const startButton = document.getElementById("startButton");
 const permissionHint = document.getElementById("permissionHint");
 const statusEl = document.getElementById("status");
-const shutterButton = document.getElementById("shutterButton");
 const mirrorControls = document.getElementById("mirrorControls");
 const brushSize = document.getElementById("brushSize");
 const readouts = document.getElementById("readouts");
 const flash = document.getElementById("flash");
 window.lucide?.createIcons();
-let statusTimer;
 
-const fog = document.createElement("canvas");
-const fogCtx = fog.getContext("2d", { willReadFrequently: false });
 const mask = document.createElement("canvas");
-const maskCtx = mask.getContext("2d", { willReadFrequently: false });
-const droplets = document.createElement("canvas");
-const dropletsCtx = droplets.getContext("2d", { willReadFrequently: false });
+const maskCtx = mask.getContext("2d");
+const frost = document.createElement("canvas");
+const frostCtx = frost.getContext("2d");
+const puff = document.createElement("canvas");
+puff.width = puff.height = 128;
+const puffCtx = puff.getContext("2d");
+const puffGradient = puffCtx.createRadialGradient(64, 64, 0, 64, 64, 64);
+puffGradient.addColorStop(0, "rgba(255,255,255,1)");
+puffGradient.addColorStop(0.5, "rgba(255,255,255,0.55)");
+puffGradient.addColorStop(1, "rgba(255,255,255,0)");
+puffCtx.fillStyle = puffGradient;
+puffCtx.fillRect(0, 0, 128, 128);
 
 const state = {
-  width: 0,
-  height: 0,
-  dpr: Math.min(window.devicePixelRatio || 1, 2),
-  brush: "finger",
-  brushRadius: 15,
-  running: false,
-  starting: false,
-  spaceDown: false,
-  debug: false,
-  fps: 0,
-  pointerDown: false,
-  lastPoint: null,
-  audioReady: false,
-  videoReady: false,
-  analyser: null,
-  audioData: null,
-  breathLevel: 0,
-  smoothedBreath: 0,
-  fogAmount: 0.22,
-  fogDirty: true,
-  stream: null,
-  lastTime: performance.now(),
-  drops: []
+  width: 0, height: 0, dpr: 1,
+  running: false, starting: false, videoReady: false,
+  stream: null, audioContext: null, analyser: null, audioData: null,
+  smoothedBreath: 0, spaceDown: false, fogTime: 0,
+  brushRadius: 15, pointerId: null, palm: false,
+  lastPoint: null, midpoint: null, wipeCarry: 0,
+  debug: false, fps: 0, lastTime: performance.now()
 };
+let statusTimer;
 
 function setStatus(message) {
   clearTimeout(statusTimer);
@@ -54,131 +45,165 @@ function setStatus(message) {
   statusTimer = setTimeout(() => statusEl.classList.add("is-hidden"), 2600);
 }
 
+function resetFog() {
+  maskCtx.clearRect(0, 0, state.width, state.height);
+  maskCtx.fillStyle = "rgba(255,255,255,0.55)";
+  maskCtx.fillRect(0, 0, state.width, state.height);
+}
+
 function fitCanvases() {
   const rect = canvas.getBoundingClientRect();
-  const width = Math.max(1, Math.floor(rect.width * state.dpr));
-  const height = Math.max(1, Math.floor(rect.height * state.dpr));
-  if (width === state.width && height === state.height) return;
-
-  state.width = width;
-  state.height = height;
-  [canvas, fog, mask, droplets].forEach((surface) => {
-    surface.width = width;
-    surface.height = height;
-  });
-
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  fogCtx.setTransform(1, 0, 0, 1, 0, 0);
-  maskCtx.setTransform(1, 0, 0, 1, 0, 0);
-  dropletsCtx.setTransform(1, 0, 0, 1, 0, 0);
-  seedFog();
-}
-
-function randomRange(min, max) {
-  return min + Math.random() * (max - min);
-}
-
-function seedFog() {
-  fogCtx.clearRect(0, 0, state.width, state.height);
-  maskCtx.clearRect(0, 0, state.width, state.height);
-  dropletsCtx.clearRect(0, 0, state.width, state.height);
-  state.drops = [];
-
-  maskCtx.fillStyle = `rgba(255,255,255,${state.fogAmount})`;
-  maskCtx.fillRect(0, 0, state.width, state.height);
-
-  for (let i = 0; i < 80; i += 1) {
-    const x = randomRange(0, state.width);
-    const y = randomRange(0, state.height);
-    const r = randomRange(18, 92) * state.dpr;
-    const alpha = randomRange(0.012, 0.04);
-    const gradient = maskCtx.createRadialGradient(x, y, 0, x, y, r);
-    gradient.addColorStop(0, `rgba(255,255,255,${alpha})`);
-    gradient.addColorStop(1, "rgba(255,255,255,0)");
-    maskCtx.fillStyle = gradient;
-    maskCtx.beginPath();
-    maskCtx.arc(x, y, r, 0, Math.PI * 2);
-    maskCtx.fill();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const width = Math.max(1, Math.round(rect.width * dpr));
+  const height = Math.max(1, Math.round(rect.height * dpr));
+  if (width === state.width && height === state.height && dpr === state.dpr) return;
+  endStroke();
+  const oldMask = document.createElement("canvas");
+  if (state.width) {
+    oldMask.width = mask.width;
+    oldMask.height = mask.height;
+    oldMask.getContext("2d").drawImage(mask, 0, 0);
   }
-
-  createDroplets(240);
-  markFogDirty();
+  state.width = canvas.width = mask.width = width;
+  state.height = canvas.height = mask.height = height;
+  state.dpr = dpr;
+  // Blur a bounded texture, then upscale it; sharp video and strokes stay full resolution.
+  const scale = Math.min(1, 960 / Math.max(width, height));
+  frost.width = Math.max(1, Math.round(width * scale));
+  frost.height = Math.max(1, Math.round(height * scale));
+  if (oldMask.width) maskCtx.drawImage(oldMask, 0, 0, width, height);
+  else resetFog();
 }
 
-function markFogDirty() {
-  state.fogDirty = true;
+function drawMirroredVideo(targetCtx, width, height) {
+  targetCtx.save();
+  targetCtx.fillStyle = "#0d0c0b";
+  targetCtx.fillRect(0, 0, width, height);
+  if (state.videoReady && video.readyState >= 2 && video.videoWidth) {
+    const scale = Math.max(width / video.videoWidth, height / video.videoHeight);
+    const drawWidth = video.videoWidth * scale;
+    const drawHeight = video.videoHeight * scale;
+    targetCtx.translate(width, 0);
+    targetCtx.scale(-1, 1);
+    targetCtx.drawImage(video, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
+  }
+  targetCtx.restore();
 }
 
-function createDroplets(count) {
-  dropletsCtx.clearRect(0, 0, state.width, state.height);
-  for (let i = 0; i < count; i += 1) {
-    const x = randomRange(0, state.width);
-    const y = randomRange(0, state.height);
-    const radius = randomRange(0.7, 2.4) * state.dpr;
-    const alpha = randomRange(0.16, 0.42);
+function drawFrame(targetCtx) {
+  drawMirroredVideo(targetCtx, state.width, state.height);
+  frostCtx.clearRect(0, 0, frost.width, frost.height);
+  const blur = 18 * state.dpr * frost.width / state.width;
+  frostCtx.filter = `blur(${blur}px) brightness(1.18) saturate(0.82)`;
+  drawMirroredVideo(frostCtx, frost.width, frost.height);
+  frostCtx.filter = "none";
+  frostCtx.fillStyle = "rgba(242,238,231,0.62)";
+  frostCtx.fillRect(0, 0, frost.width, frost.height);
+  frostCtx.globalCompositeOperation = "destination-in";
+  frostCtx.drawImage(mask, 0, 0, frost.width, frost.height);
+  frostCtx.globalCompositeOperation = "source-over";
+  targetCtx.drawImage(frost, 0, 0, state.width, state.height);
+}
 
-    dropletsCtx.fillStyle = `rgba(255,255,255,${alpha})`;
-    dropletsCtx.beginPath();
-    dropletsCtx.ellipse(x, y, radius * randomRange(0.75, 1.4), radius, 0, 0, Math.PI * 2);
-    dropletsCtx.fill();
+function addFog(strength) {
+  const reach = Math.min(state.width, state.height) * 0.43 * (0.6 + strength * 0.7);
+  maskCtx.save();
+  for (let i = 0; i < 12; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const distance = Math.pow(Math.random(), 1.3) * reach;
+    const x = state.width / 2 + Math.cos(angle) * distance * 1.45;
+    const y = state.height * 0.55 + Math.sin(angle) * distance - distance * 0.18;
+    const radius = reach * (0.16 + Math.random() * 0.26);
+    maskCtx.globalAlpha = 0.36 * (0.3 + strength * 0.7) * (0.45 + Math.random() * 0.55);
+    maskCtx.drawImage(puff, x - radius, y - radius, radius * 2, radius * 2);
+  }
+  maskCtx.restore();
+}
 
-    if (Math.random() > 0.86) {
-      const length = randomRange(14, 74) * state.dpr;
-      const fade = dropletsCtx.createLinearGradient(x, y, x, y + length);
-      fade.addColorStop(0, `rgba(255,255,255,${alpha * 0.45})`);
-      fade.addColorStop(1, "rgba(255,255,255,0)");
-      dropletsCtx.strokeStyle = fade;
-      dropletsCtx.lineWidth = randomRange(0.6, 1.5) * state.dpr;
-      dropletsCtx.beginPath();
-      dropletsCtx.moveTo(x, y);
-      dropletsCtx.bezierCurveTo(x + randomRange(-2, 2) * state.dpr, y + length * 0.4, x + randomRange(-4, 4) * state.dpr, y + length * 0.8, x + randomRange(-2, 2) * state.dpr, y + length);
-      dropletsCtx.stroke();
+function strokeTo(point) {
+  const last = state.lastPoint;
+  maskCtx.save();
+  maskCtx.globalCompositeOperation = "destination-out";
+  if (state.palm) {
+    // Stamp by distance, so a stationary hand never keeps removing fog.
+    if (last) {
+      const distance = Math.hypot(point.x - last.x, point.y - last.y);
+      const radius = 82 * state.dpr;
+      const spacing = radius * 0.5;
+      for (let travel = spacing - state.wipeCarry; travel <= distance; travel += spacing) {
+        const t = travel / distance;
+        const x = last.x + (point.x - last.x) * t;
+        const y = last.y + (point.y - last.y) * t;
+        const gradient = maskCtx.createRadialGradient(x, y, radius * 0.4, x, y, radius);
+        gradient.addColorStop(0, "rgba(0,0,0,0.34)");
+        gradient.addColorStop(1, "rgba(0,0,0,0)");
+        maskCtx.fillStyle = gradient;
+        maskCtx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+      }
+      state.wipeCarry = (state.wipeCarry + distance) % spacing;
+    }
+  } else {
+    const radius = state.brushRadius * state.dpr;
+    maskCtx.fillStyle = maskCtx.strokeStyle = "#000";
+    maskCtx.lineWidth = radius * 2;
+    maskCtx.lineCap = maskCtx.lineJoin = "round";
+    maskCtx.beginPath();
+    if (!last) {
+      maskCtx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+      maskCtx.fill();
+      state.midpoint = point;
+    } else {
+      const mid = { x: (point.x + last.x) / 2, y: (point.y + last.y) / 2 };
+      maskCtx.moveTo(state.midpoint.x, state.midpoint.y);
+      maskCtx.quadraticCurveTo(last.x, last.y, mid.x, mid.y);
+      maskCtx.stroke();
+      state.midpoint = mid;
     }
   }
+  maskCtx.restore();
+  state.lastPoint = point;
 }
 
-function rebuildFogTexture() {
-  state.fogDirty = false;
-  fogCtx.clearRect(0, 0, state.width, state.height);
-
-  const base = fogCtx.createLinearGradient(0, 0, state.width, state.height);
-  base.addColorStop(0, "rgba(237,235,224,0.58)");
-  base.addColorStop(0.38, "rgba(214,216,205,0.72)");
-  base.addColorStop(0.78, "rgba(244,241,229,0.54)");
-  base.addColorStop(1, "rgba(190,194,187,0.62)");
-  fogCtx.fillStyle = base;
-  fogCtx.fillRect(0, 0, state.width, state.height);
-
-  for (let i = 0; i < 130; i += 1) {
-    const x = randomRange(-state.width * 0.1, state.width * 1.1);
-    const y = randomRange(-state.height * 0.1, state.height * 1.1);
-    const w = randomRange(60, 260) * state.dpr;
-    const h = randomRange(18, 90) * state.dpr;
-    fogCtx.fillStyle = `rgba(255,255,255,${randomRange(0.012, 0.05)})`;
-    fogCtx.beginPath();
-    fogCtx.ellipse(x, y, w, h, randomRange(-0.4, 0.4), 0, Math.PI * 2);
-    fogCtx.fill();
+function endStroke() {
+  if (state.lastPoint && state.midpoint && !state.palm) {
+    maskCtx.save();
+    maskCtx.globalCompositeOperation = "destination-out";
+    maskCtx.strokeStyle = "#000";
+    maskCtx.lineWidth = state.brushRadius * state.dpr * 2;
+    maskCtx.lineCap = "round";
+    maskCtx.beginPath();
+    maskCtx.moveTo(state.midpoint.x, state.midpoint.y);
+    maskCtx.lineTo(state.lastPoint.x, state.lastPoint.y);
+    maskCtx.stroke();
+    maskCtx.restore();
   }
+  if (state.pointerId !== null && canvas.hasPointerCapture(state.pointerId)) canvas.releasePointerCapture(state.pointerId);
+  state.pointerId = null;
+  state.lastPoint = state.midpoint = null;
+  state.wipeCarry = 0;
+}
 
-  fogCtx.globalCompositeOperation = "multiply";
-  for (let i = 0; i < 34; i += 1) {
-    const x = randomRange(0, state.width);
-    const y = randomRange(0, state.height);
-    const r = randomRange(40, 160) * state.dpr;
-    const gradient = fogCtx.createRadialGradient(x, y, 0, x, y, r);
-    gradient.addColorStop(0, "rgba(95,92,84,0.08)");
-    gradient.addColorStop(1, "rgba(255,255,255,0)");
-    fogCtx.fillStyle = gradient;
-    fogCtx.beginPath();
-    fogCtx.arc(x, y, r, 0, Math.PI * 2);
-    fogCtx.fill();
-  }
-  fogCtx.globalCompositeOperation = "source-over";
+function setupAudio(stream) {
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextCtor || !stream.getAudioTracks().length) return;
+  state.audioContext = new AudioContextCtor();
+  state.analyser = state.audioContext.createAnalyser();
+  state.analyser.fftSize = 2048;
+  state.analyser.smoothingTimeConstant = 0.78;
+  state.audioContext.createMediaStreamSource(stream).connect(state.analyser);
+  state.audioData = new Uint8Array(state.analyser.frequencyBinCount);
+}
 
-  fogCtx.drawImage(droplets, 0, 0);
-  fogCtx.globalCompositeOperation = "destination-in";
-  fogCtx.drawImage(mask, 0, 0);
-  fogCtx.globalCompositeOperation = "source-over";
+function readBreathLevel() {
+  if (!state.analyser) return 0;
+  state.analyser.getByteFrequencyData(state.audioData);
+  const lowEnd = Math.floor(state.audioData.length * 0.08);
+  const highStart = Math.floor(state.audioData.length * 0.12);
+  const highEnd = Math.floor(state.audioData.length * 0.62);
+  let low = 0, high = 0;
+  for (let i = 1; i < lowEnd; i++) low += state.audioData[i];
+  for (let i = highStart; i < highEnd; i++) high += state.audioData[i];
+  return Math.min(1, Math.max(0, (high / (highEnd - highStart) * 1.55 + low / Math.max(1, lowEnd - 1) * 0.45 - 22) / 92));
 }
 
 async function startMirror() {
@@ -186,42 +211,30 @@ async function startMirror() {
   state.starting = true;
   startButton.disabled = true;
   permissionHint.textContent = "Opening camera and microphone...";
-
   try {
     if (!state.stream) state.stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: "user",
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-      },
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false
-      }
+      video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
     });
-
     video.srcObject = state.stream;
     await video.play();
     state.videoReady = true;
-    if (!state.audioReady) setupAudio(state.stream);
+    if (!state.audioContext) setupAudio(state.stream);
     await state.audioContext?.resume();
+    fitCanvases();
     state.running = true;
     state.lastTime = performance.now();
     permissionPanel.classList.add("is-hidden");
     mirrorControls.hidden = false;
-    canvas.focus({ preventScroll: true });
     permissionHint.textContent = "";
+    canvas.focus({ preventScroll: true });
     setStatus("Ready");
   } catch (error) {
     state.stream?.getTracks().forEach((track) => track.stop());
     state.stream = null;
     state.videoReady = false;
-    state.audioReady = false;
     state.audioContext?.close().catch(() => {});
-    state.audioContext = null;
-    state.analyser = null;
-    permissionPanel.classList.remove("is-hidden");
+    state.audioContext = state.analyser = null;
     permissionHint.textContent = `Camera and microphone unavailable (${error.name}). Allow access in your browser, then try Start again.`;
   } finally {
     state.starting = false;
@@ -231,197 +244,14 @@ async function startMirror() {
 
 function returnToStart() {
   if (!state.running) return;
-  state.running = false;
-  state.spaceDown = false;
-  state.pointerDown = false;
-  state.lastPoint = null;
-  state.debug = false;
-  readouts.hidden = true;
-  mirrorControls.hidden = true;
-  state.fogAmount = 0.22;
-  seedFog();
+  endStroke();
+  state.running = state.spaceDown = state.debug = false;
+  state.fogTime = state.smoothedBreath = 0;
+  readouts.hidden = mirrorControls.hidden = true;
+  resetFog();
   permissionPanel.classList.remove("is-hidden");
   statusEl.classList.add("is-hidden");
   startButton.focus({ preventScroll: true });
-}
-
-function setupAudio(stream) {
-  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-  if (!AudioContextCtor) {
-    setStatus("Camera is running, but this browser does not support Web Audio breath detection.");
-    return;
-  }
-
-  const audioContext = new AudioContextCtor();
-  const source = audioContext.createMediaStreamSource(stream);
-  const analyser = audioContext.createAnalyser();
-  analyser.fftSize = 2048;
-  analyser.smoothingTimeConstant = 0.78;
-  source.connect(analyser);
-
-  state.analyser = analyser;
-  state.audioData = new Uint8Array(analyser.frequencyBinCount);
-  state.audioContext = audioContext;
-  state.audioReady = true;
-
-  if (audioContext.state === "suspended") {
-    audioContext.resume().catch(() => {});
-  }
-}
-
-function readBreathLevel() {
-  if (!state.analyser || !state.audioData) return 0;
-
-  state.analyser.getByteFrequencyData(state.audioData);
-  let low = 0;
-  let midHigh = 0;
-  const lowBins = Math.floor(state.audioData.length * 0.08);
-  const highStart = Math.floor(state.audioData.length * 0.12);
-  const highEnd = Math.floor(state.audioData.length * 0.62);
-
-  for (let i = 1; i < lowBins; i += 1) low += state.audioData[i];
-  for (let i = highStart; i < highEnd; i += 1) midHigh += state.audioData[i];
-
-  const lowAvg = low / Math.max(1, lowBins);
-  const hissAvg = midHigh / Math.max(1, highEnd - highStart);
-  const raw = Math.max(0, (hissAvg * 1.55 + lowAvg * 0.45 - 22) / 92);
-  return Math.min(1, raw);
-}
-
-function addFog(strength, x = state.width / 2, y = state.height / 2, spread = Math.max(state.width, state.height) * 0.82) {
-  maskCtx.globalCompositeOperation = "source-over";
-  const cloudCount = Math.ceil(12 + strength * 38);
-  for (let i = 0; i < cloudCount; i += 1) {
-    const angle = Math.random() * Math.PI * 2;
-    const distance = Math.sqrt(Math.random()) * spread * 0.55;
-    const cx = x + Math.cos(angle) * distance;
-    const cy = y + Math.sin(angle) * distance;
-    const r = randomRange(50, 180) * state.dpr * (0.8 + strength);
-    const alpha = randomRange(0.012, 0.032) * (1 + strength * 2.4);
-    const gradient = maskCtx.createRadialGradient(cx, cy, 0, cx, cy, r);
-    gradient.addColorStop(0, `rgba(255,255,255,${alpha})`);
-    gradient.addColorStop(1, "rgba(255,255,255,0)");
-    maskCtx.fillStyle = gradient;
-    maskCtx.beginPath();
-    maskCtx.arc(cx, cy, r, 0, Math.PI * 2);
-    maskCtx.fill();
-  }
-
-  if (Math.random() < 0.55 + strength * 0.4) {
-    createDroplets(Math.ceil(10 + strength * 24));
-  }
-  markFogDirty();
-}
-
-function eraseAt(point, radiusCss) {
-  const radius = radiusCss * state.dpr;
-  maskCtx.save();
-  maskCtx.globalCompositeOperation = "destination-out";
-  const gradient = maskCtx.createRadialGradient(point.x, point.y, radius * 0.12, point.x, point.y, radius);
-  gradient.addColorStop(0, "rgba(0,0,0,1)");
-  gradient.addColorStop(0.55, "rgba(0,0,0,0.86)");
-  gradient.addColorStop(1, "rgba(0,0,0,0)");
-  maskCtx.fillStyle = gradient;
-  maskCtx.beginPath();
-  maskCtx.arc(point.x, point.y, radius, 0, Math.PI * 2);
-  maskCtx.fill();
-  maskCtx.restore();
-}
-
-function drawWetEdge(point, radiusCss) {
-  const radius = radiusCss * state.dpr;
-  dropletsCtx.save();
-  dropletsCtx.globalAlpha = radiusCss > 40 ? 0.2 : 0.34;
-  dropletsCtx.strokeStyle = "rgba(255,255,255,0.34)";
-  dropletsCtx.lineWidth = Math.max(0.8, radius * 0.035);
-  dropletsCtx.beginPath();
-  dropletsCtx.arc(point.x, point.y, radius * randomRange(0.72, 0.94), Math.random() * Math.PI, Math.random() * Math.PI + Math.PI);
-  dropletsCtx.stroke();
-  dropletsCtx.restore();
-}
-
-function strokeTo(point) {
-  const radius = state.brush === "palm" ? 82 : state.brushRadius;
-  const last = state.lastPoint || point;
-  const dx = point.x - last.x;
-  const dy = point.y - last.y;
-  const distance = Math.hypot(dx, dy);
-  const steps = Math.max(1, Math.ceil(distance / Math.max(4, radius * state.dpr * 0.22)));
-
-  for (let i = 0; i <= steps; i += 1) {
-    const t = i / steps;
-    const sample = {
-      x: last.x + dx * t,
-      y: last.y + dy * t
-    };
-    eraseAt(sample, radius);
-    if (i % 2 === 0) drawWetEdge(sample, radius);
-  }
-
-  state.lastPoint = point;
-  markFogDirty();
-}
-
-function pointFromEvent(event) {
-  const rect = canvas.getBoundingClientRect();
-  return {
-    x: (event.clientX - rect.left) * state.dpr,
-    y: (event.clientY - rect.top) * state.dpr
-  };
-}
-
-function drawMirroredVideo(targetCtx) {
-  targetCtx.save();
-  targetCtx.fillStyle = "#171412";
-  targetCtx.fillRect(0, 0, state.width, state.height);
-
-  if (state.videoReady && video.videoWidth && video.videoHeight) {
-    const videoRatio = video.videoWidth / video.videoHeight;
-    const canvasRatio = state.width / state.height;
-    let drawWidth = state.width;
-    let drawHeight = state.height;
-    let x = 0;
-    let y = 0;
-
-    if (videoRatio > canvasRatio) {
-      drawHeight = state.height;
-      drawWidth = drawHeight * videoRatio;
-      x = (state.width - drawWidth) / 2;
-    } else {
-      drawWidth = state.width;
-      drawHeight = drawWidth / videoRatio;
-      y = (state.height - drawHeight) / 2;
-    }
-
-    targetCtx.translate(state.width, 0);
-    targetCtx.scale(-1, 1);
-    targetCtx.drawImage(video, state.width - x - drawWidth, y, drawWidth, drawHeight);
-    targetCtx.filter = "none";
-  }
-
-  targetCtx.restore();
-}
-
-function drawMirrorSheen(targetCtx) {
-  targetCtx.save();
-  targetCtx.globalCompositeOperation = "screen";
-  const sheen = targetCtx.createLinearGradient(0, 0, state.width, state.height);
-  sheen.addColorStop(0, "rgba(255,255,255,0.16)");
-  sheen.addColorStop(0.24, "rgba(255,255,255,0.03)");
-  sheen.addColorStop(0.55, "rgba(255,255,255,0.10)");
-  sheen.addColorStop(1, "rgba(255,255,255,0.02)");
-  targetCtx.fillStyle = sheen;
-  targetCtx.fillRect(0, 0, state.width, state.height);
-  targetCtx.restore();
-
-  targetCtx.save();
-  targetCtx.globalCompositeOperation = "multiply";
-  const vignette = targetCtx.createRadialGradient(state.width * 0.5, state.height * 0.4, state.width * 0.1, state.width * 0.5, state.height * 0.52, state.width * 0.72);
-  vignette.addColorStop(0, "rgba(255,255,255,0)");
-  vignette.addColorStop(1, "rgba(0,0,0,0.34)");
-  targetCtx.fillStyle = vignette;
-  targetCtx.fillRect(0, 0, state.width, state.height);
-  targetCtx.restore();
 }
 
 function render(time) {
@@ -430,128 +260,86 @@ function render(time) {
   fitCanvases();
   const elapsed = Math.min(48, time - state.lastTime);
   state.lastTime = time;
-
-  const breath = readBreathLevel();
-  state.smoothedBreath += (breath - state.smoothedBreath) * 0.18;
+  state.smoothedBreath += (readBreathLevel() - state.smoothedBreath) * (1 - Math.exp(-elapsed / 84));
   state.fps += (1000 / Math.max(1, elapsed) - state.fps) * 0.08;
-  if (state.debug) readouts.textContent = `mic ${state.smoothedBreath.toFixed(3)}  ${state.smoothedBreath > 0.34 ? "FOGGING" : "quiet"}\naudio ${state.audioContext?.state || "unavailable"}  ${Math.round(state.fps)} fps`;
-
-  if (state.spaceDown || (state.smoothedBreath > 0.34 && !state.pointerDown)) {
-    const strength = state.spaceDown ? elapsed / 32 : Math.min(1, (state.smoothedBreath - 0.28) * 1.7);
-    state.fogAmount = Math.min(0.9, state.fogAmount + strength * elapsed * 0.00018);
-    addFog(strength * 0.18, state.width * randomRange(0.35, 0.65), state.height * randomRange(0.28, 0.7), Math.max(state.width, state.height) * 0.92);
-  } else if (Math.random() < 0.012) {
-    markFogDirty();
-  }
-
-  if (state.fogDirty) rebuildFogTexture();
-
-  drawMirroredVideo(ctx);
-  ctx.save();
-  ctx.globalCompositeOperation = "source-over";
-  ctx.drawImage(fog, 0, 0);
-  ctx.restore();
+  const fogging = state.spaceDown || (state.smoothedBreath > 0.34 && state.pointerId === null);
+  if (fogging) {
+    state.fogTime += elapsed;
+    // Use elapsed time rather than frame count for consistent condensation buildup.
+    while (state.fogTime >= 1000 / 30) {
+      addFog(state.spaceDown ? 1 : Math.min(1, (state.smoothedBreath - 0.28) * 1.7));
+      state.fogTime -= 1000 / 30;
+    }
+  } else state.fogTime = 0;
+  if (state.debug) readouts.textContent = `mic ${state.smoothedBreath.toFixed(3)}  ${fogging ? "FOGGING" : "quiet"}\naudio ${state.audioContext?.state || "unavailable"}  ${Math.round(state.fps)} fps`;
+  drawFrame(ctx);
 }
 
 function captureSnapshot() {
   if (!state.running) return;
-  if (state.fogDirty) rebuildFogTexture();
-
   const output = document.createElement("canvas");
   output.width = state.width;
   output.height = state.height;
-  const outputCtx = output.getContext("2d", { alpha: false });
-  drawMirroredVideo(outputCtx);
-  outputCtx.drawImage(fog, 0, 0);
-
-  const link = document.createElement("a");
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  link.download = `foggy-mirror-${timestamp}.png`;
-  link.href = output.toDataURL("image/png");
-  link.click();
-  flash.classList.remove("pop");
-  void flash.offsetWidth;
-  flash.classList.add("pop");
-  setStatus("Snapshot saved as a PNG.");
+  drawFrame(output.getContext("2d", { alpha: false }));
+  try {
+    const link = document.createElement("a");
+    link.download = `foggy-mirror-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
+    link.href = output.toDataURL("image/png");
+    link.click();
+    flash.classList.remove("pop");
+    void flash.offsetWidth;
+    flash.classList.add("pop");
+    setStatus("Photo ready. Check your downloads.");
+  } catch (error) {
+    setStatus(`Could not save photo: ${error.message}`);
+  }
 }
 
+function pointFromEvent(event) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: (event.clientX - rect.left) * state.dpr, y: (event.clientY - rect.top) * state.dpr };
+}
 canvas.addEventListener("pointerdown", (event) => {
-  if (!state.running) return;
-  state.pointerDown = true;
+  if (!state.running || state.pointerId !== null || event.button !== 0) return;
+  state.pointerId = event.pointerId;
+  state.palm = event.shiftKey || event.altKey || (event.pointerType === "touch" && event.width > 48);
   canvas.setPointerCapture(event.pointerId);
-  const oldBrush = state.brush;
-  if (event.pointerType === "touch" && event.width > 48) state.brush = "palm";
-  state.lastPoint = pointFromEvent(event);
-  strokeTo(state.lastPoint);
-  state.brush = oldBrush;
-});
-
-canvas.addEventListener("pointermove", (event) => {
-  if (!state.pointerDown) return;
-  const oldBrush = state.brush;
-  if (event.shiftKey || event.altKey || (event.pointerType === "touch" && event.width > 48)) {
-    state.brush = "palm";
-  }
   strokeTo(pointFromEvent(event));
-  state.brush = oldBrush;
 });
-
-canvas.addEventListener("pointerup", (event) => {
-  state.pointerDown = false;
-  state.lastPoint = null;
-  if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+canvas.addEventListener("pointermove", (event) => {
+  if (event.pointerId !== state.pointerId) return;
+  const samples = event.getCoalescedEvents?.();
+  for (const sample of samples?.length ? samples : [event]) strokeTo(pointFromEvent(sample));
 });
-
-canvas.addEventListener("pointercancel", () => {
-  state.pointerDown = false;
-  state.lastPoint = null;
-});
-
+canvas.addEventListener("pointerup", (event) => { if (event.pointerId === state.pointerId) endStroke(); });
+canvas.addEventListener("pointercancel", endStroke);
+canvas.addEventListener("lostpointercapture", () => { state.pointerId = null; state.lastPoint = state.midpoint = null; state.wipeCarry = 0; });
 startButton.addEventListener("click", startMirror);
-brushSize.addEventListener("input", () => {
-  state.brushRadius = Number(brushSize.value);
-});
-shutterButton.addEventListener("click", captureSnapshot);
+brushSize.addEventListener("input", () => { state.brushRadius = Number(brushSize.value); });
+document.getElementById("shutterButton").addEventListener("click", captureSnapshot);
 window.addEventListener("resize", fitCanvases);
 window.addEventListener("keydown", (event) => {
   if (!state.running || event.ctrlKey || event.metaKey || event.altKey) return;
   if (event.key === "Escape") { returnToStart(); return; }
   if (event.target.closest("button, input, a")) return;
-  if (event.code === "Space") {
-    event.preventDefault();
-    state.spaceDown = true;
-  } else if (!event.repeat) {
+  if (event.code === "Space") { event.preventDefault(); state.spaceDown = true; }
+  else if (!event.repeat) {
     switch (event.key.toLowerCase()) {
-      case "c":
-        maskCtx.clearRect(0, 0, state.width, state.height);
-        markFogDirty();
-        break;
+      case "c": maskCtx.clearRect(0, 0, state.width, state.height); break;
       case "s": captureSnapshot(); break;
-      case "d":
-        state.debug = !state.debug;
-        readouts.hidden = !state.debug;
-        break;
+      case "d": state.debug = !state.debug; readouts.hidden = !state.debug; break;
     }
   }
 });
-window.addEventListener("keyup", (event) => {
-  if (event.code === "Space") state.spaceDown = false;
-});
-window.addEventListener("blur", () => {
-  state.spaceDown = false;
-  state.pointerDown = false;
-  state.lastPoint = null;
-});
+window.addEventListener("keyup", (event) => { if (event.code === "Space") state.spaceDown = false; });
+window.addEventListener("blur", () => { state.spaceDown = false; endStroke(); });
 window.addEventListener("pagehide", () => {
   state.stream?.getTracks().forEach((track) => track.stop());
   state.audioContext?.close().catch(() => {});
 });
-
+fitCanvases();
+requestAnimationFrame(render);
 if (!navigator.mediaDevices?.getUserMedia) {
-  permissionHint.textContent = "This browser does not support camera and microphone access.";
-  setStatus("Media devices are not available in this browser.");
-} else {
-  fitCanvases();
-  seedFog();
-  requestAnimationFrame(render);
+  permissionHint.textContent = "Camera and microphone require a supported browser on localhost or HTTPS.";
+  startButton.disabled = true;
 }
