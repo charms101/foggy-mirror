@@ -414,7 +414,13 @@ function setupAudio(stream) {
   state.analyser = state.audioContext.createAnalyser();
   state.analyser.fftSize = 2048;
   state.analyser.smoothingTimeConstant = 0.2;
-  state.audioContext.createMediaStreamSource(stream).connect(state.analyser);
+  state.audioSource = state.audioContext.createMediaStreamSource(stream);
+  state.audioSource.connect(state.analyser);
+  // Keep audio processing active in browsers requiring an output path, without playing the mic.
+  state.audioSink = state.audioContext.createGain();
+  state.audioSink.gain.value = 0;
+  state.analyser.connect(state.audioSink);
+  state.audioSink.connect(state.audioContext.destination);
   state.audioData = new Float32Array(state.analyser.fftSize);
   state.spectrum = new Float32Array(state.analyser.frequencyBinCount);
   breathDetector.reset();
@@ -428,7 +434,7 @@ function setupAudio(stream) {
 }
 
 function readBreathLevel(elapsed, blocked) {
-  if (!state.analyser) return 0;
+  if (!state.analyser || state.audioContext?.state !== "running") return 0;
   state.analyser.getFloatTimeDomainData(state.audioData);
   state.analyser.getFloatFrequencyData(state.spectrum);
   return breathDetector.update(state.audioData, state.spectrum, state.audioContext.sampleRate, elapsed, blocked);
@@ -449,6 +455,12 @@ async function enableMicrophone() {
   micRetry.disabled = true;
   const cameraStream = state.stream;
   try {
+    if (state.audioContext && state.analyser) {
+      await state.audioContext.resume();
+      breathDetector.reset();
+      micRetry.hidden = state.audioContext.state === "running";
+      return;
+    }
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, video: false });
     if (!state.running || state.stream !== cameraStream) { stream.getTracks().forEach(track => track.stop()); return; }
     state.micStream?.getTracks().forEach(track => track.stop());
@@ -533,8 +545,10 @@ function render(time) {
   state.fps += (1000 / Math.max(1, elapsed) - state.fps) * 0.08;
   trackFace(time);
   trackHands(time);
-  const gestureActive = animateHands(time, elapsed);
-  state.smoothedBreath = readBreathLevel(elapsed, state.pointerId !== null || gestureActive || time - state.lastKeyAt < 300);
+  animateHands(time, elapsed);
+  const gestureDrawing = [...handTracks.values()].some(track => track.mode === "draw");
+  state.smoothedBreath = readBreathLevel(elapsed, state.pointerId !== null || gestureDrawing || time - state.lastKeyAt < 300);
+  micRetry.hidden = !!state.analyser && state.audioContext?.state === "running";
   const manual = state.spaceDown || state.manualFog;
   const fogging = manual || state.smoothedBreath > 0.08;
   if (fogging) {
@@ -545,7 +559,7 @@ function render(time) {
       state.fogTime -= 1000 / 30;
     }
   } else state.fogTime = 0;
-  if (state.debug) readouts.textContent = `mic ${breathDetector.rms.toFixed(4)}  gate ${breathDetector.gate.toFixed(4)}  ${fogging ? "FOGGING" : "quiet"}\naudio ${state.audioContext?.state || "unavailable"}  ${Math.round(state.fps)} fps\nhands ${handStatus}  ${[...handTracks.values()].map(track => track.mode).join(", ") || "none"}\nface ${mouth && time - mouthSeenAt < 700 ? "locked" : faceStatus}`;
+  if (state.debug) readouts.textContent = `mic ${breathDetector.rms.toFixed(4)}  gate ${breathDetector.gate.toFixed(4)}  ${fogging ? "FOGGING" : "quiet"}\naudio ${state.audioContext?.state || "unavailable"}  ${Math.round(state.fps)} fps\nhiss ${breathDetector.hiss.toFixed(2)}  wind ${breathDetector.wind.toFixed(2)}\nhands ${handStatus}  ${[...handTracks.values()].map(track => track.mode).join(", ") || "none"}\nface ${mouth && time - mouthSeenAt < 700 ? "locked" : faceStatus}`;
   drawFrame(ctx);
   if (state.pointerId === null) drawHandMarkers(time);
 }
@@ -634,6 +648,7 @@ function releaseMedia() {
   state.micStream?.getTracks().forEach(track => track.stop());
   state.audioContext?.close().catch(() => {});
   state.stream = state.micStream = state.audioContext = state.analyser = null;
+  state.audioSource = state.audioSink = null;
   state.videoReady = false;
   video.srcObject = null;
 }
