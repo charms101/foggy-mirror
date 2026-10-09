@@ -50,9 +50,9 @@ function surface() {
 }
 const elements = new Map();
 const sandbox = vm.createContext({
-  document: { getElementById(id) { if (!elements.has(id)) elements.set(id, surface()); return elements.get(id); }, createElement: surface },
+  document: { getElementById(id) { if (!elements.has(id)) elements.set(id, surface()); return elements.get(id); }, createElement: surface, addEventListener() {} },
   window: { addEventListener() {}, devicePixelRatio: 1 }, navigator: {}, performance: { now: () => 1000 },
-  requestAnimationFrame() {}, setTimeout() {}, clearTimeout() {}, HandGestures: { classify, mirrorPoint }, console
+  requestAnimationFrame() {}, setTimeout() {}, clearTimeout() {}, HandGestures: { classify, mirrorPoint }, BreathDetector: require("./breath-detector.js"), console
 });
 vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, "utf8"), sandbox);
 sandbox.pointing = hand([false, true, true, true]);
@@ -81,3 +81,42 @@ assert.equal(vm.runInContext("handTracks.size", sandbox), 0, "Tracking loss clea
 vm.runInContext("clearHands(); onHands({multiHandLandmarks:[pointing]})", sandbox);
 assert.equal(vm.runInContext("handTracks.size", sandbox), 0, "Stale inference results cannot restart a stroke");
 console.log("Hand gestures: classification, crop mapping, erasing, idle gestures, tracking loss, and stale results passed.");
+
+async function testMediaAndFace() {
+  sandbox.window.Hands = class {
+    setOptions() {} onResults() {} async initialize() {} async close() {}
+  };
+  sandbox.window.FaceDetection = class {
+    setOptions() {} onResults(callback) { this.results = callback; } async initialize() {} async close() {}
+  };
+  let requests = 0;
+  const track = { readyState: "live", addEventListener() {}, stop() { this.readyState = "ended"; } };
+  const cameraStream = { getTracks: () => [track], getVideoTracks: () => [track], getAudioTracks: () => [] };
+  sandbox.navigator.mediaDevices = { async getUserMedia(options) {
+    requests++;
+    if (options.audio) throw Object.assign(new Error("Denied"), { name: "NotAllowedError" });
+    return cameraStream;
+  } };
+  elements.get("camera").play = async () => {};
+  vm.runInContext("state.running = false; startButton.disabled = false", sandbox);
+  await vm.runInContext("startMirror()", sandbox);
+  assert.equal(requests, 2, "Microphone denial retries with camera only");
+  assert.equal(vm.runInContext("state.running", sandbox), true);
+  assert.equal(elements.get("micRetry").hidden, false, "Camera-only mode offers microphone retry");
+  await vm.runInContext("handSetup", sandbox);
+  await vm.runInContext("faceSetup", sandbox);
+  vm.runInContext("faceResultGeneration = handGeneration; face.results({detections:[{landmarks:[{}, {}, {}, {x:0.6,y:0.5}]}]})", sandbox);
+  assert.equal(vm.runInContext("mouth.y", sandbox), 360);
+  assert.ok(Math.abs(vm.runInContext("mouth.x", sandbox) - 512) < 0.001, "Mouth is mirrored into the camera crop");
+  vm.runInContext("returnToStart()", sandbox);
+  assert.equal(vm.runInContext("mouth", sandbox), null, "Pause discards mouth tracking");
+  vm.runInContext("releaseMedia()", sandbox);
+  assert.equal(track.readyState, "ended", "Leaving releases camera tracks");
+  sandbox.navigator.mediaDevices.getUserMedia = async () => { throw Object.assign(new Error("Denied"), { name: "NotAllowedError" }); };
+  await vm.runInContext("startMirror()", sandbox);
+  assert.equal(vm.runInContext("state.running", sandbox), false);
+  assert.equal(elements.get("startButton").disabled, false, "Denied access leaves Start retryable");
+  assert.match(elements.get("permissionHint").textContent, /Camera access was denied/);
+  console.log("Media recovery: camera-only fallback, mouth coordinates, pause, track release, and denial retry passed.");
+}
+testMediaAndFace().catch(error => { console.error(error); process.exitCode = 1; });

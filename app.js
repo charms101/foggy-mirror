@@ -11,6 +11,11 @@ const mirrorControls = document.getElementById("mirrorControls");
 const brushSize = document.getElementById("brushSize");
 const readouts = document.getElementById("readouts");
 const flash = document.getElementById("flash");
+const micRetry = document.getElementById("micRetry");
+const wipeTool = document.getElementById("wipeTool");
+const fogTool = document.getElementById("fogTool");
+const breathDetector = new BreathDetector();
+const mobile = window.matchMedia?.("(pointer: coarse)").matches || false;
 window.lucide?.createIcons();
 
 const mask = document.createElement("canvas");
@@ -30,8 +35,9 @@ puffCtx.fillRect(0, 0, 128, 128);
 const state = {
   width: 0, height: 0, dpr: 1,
   running: false, starting: false, videoReady: false,
-  stream: null, audioContext: null, analyser: null, audioData: null,
-  smoothedBreath: 0, spaceDown: false, fogTime: 0,
+  stream: null, micStream: null, audioContext: null, analyser: null, audioData: null, spectrum: null,
+  smoothedBreath: 0, spaceDown: false, manualFog: false, fogTime: 0, lastKeyAt: 0,
+  broadWipe: false, shooting: false,
   brushRadius: 15, pointerId: null, palm: false,
   lastPoint: null, midpoint: null, wipeCarry: 0,
   debug: false, fps: 0, lastTime: performance.now()
@@ -48,22 +54,75 @@ let handLastTime = 0;
 let handGeneration = 0;
 let handResultGeneration = 0;
 let handStatus = "off";
+let face = null, faceSetup = null, faceBusy = false, faceLastTime = 0, faceStatus = "off";
+let faceResultGeneration = 0;
+let mouth = null, mouthSeenAt = 0;
+const faceInput = document.createElement("canvas");
+const faceInputCtx = faceInput.getContext("2d");
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    const timer = setTimeout(() => { script.remove(); reject(new Error("Model loading timed out")); }, 20000);
+    script.src = src;
+    script.crossOrigin = "anonymous";
+    script.onload = () => { clearTimeout(timer); resolve(); };
+    script.onerror = () => { clearTimeout(timer); script.remove(); reject(new Error("Model could not load")); };
+    document.head.append(script);
+  });
+}
+
+async function setupFace() {
+  if (faceSetup) return faceSetup;
+  faceStatus = "loading";
+  faceSetup = (async () => {
+    const base = "https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/";
+    if (!window.FaceDetection) await loadScript(`${base}face_detection.js`);
+    face = new window.FaceDetection({ locateFile: file => `${base}${file}` });
+    face.setOptions({ model: "short", minDetectionConfidence: 0.5 });
+    face.onResults(result => {
+      if (!state.running || document.hidden || faceResultGeneration !== handGeneration) return;
+      const point = result.detections?.[0]?.landmarks?.[3];
+      if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+      const target = HandGestures.mirrorPoint(point, state.width, state.height, video.videoWidth, video.videoHeight);
+      mouth = mouth ? { x: mouth.x + (target.x - mouth.x) * 0.4, y: mouth.y + (target.y - mouth.y) * 0.4 } : target;
+      mouthSeenAt = performance.now();
+    });
+    await face.initialize();
+    faceStatus = "ready";
+  })().catch(error => {
+    faceStatus = "unavailable";
+    faceSetup = null;
+    face?.close().catch(() => {});
+    face = null;
+    console.warn(error.message);
+  });
+  return faceSetup;
+}
+
+function trackFace(time) {
+  if (!face || faceStatus !== "ready" || faceBusy || handBusy || time - faceLastTime < 200 || video.readyState < 2) return;
+  faceLastTime = time;
+  const generation = handGeneration;
+  faceResultGeneration = generation;
+  const width = 320, height = Math.round(width * video.videoHeight / video.videoWidth);
+  if (faceInput.width !== width || faceInput.height !== height) { faceInput.width = width; faceInput.height = height; }
+  faceInputCtx.drawImage(video, 0, 0, width, height);
+  faceBusy = true;
+  face.send({ image: faceInput }).catch(error => { faceStatus = "unavailable"; mouth = null; console.warn(error.message); }).finally(() => {
+    faceBusy = false;
+    if (generation !== handGeneration) mouth = null;
+  });
+}
 
 async function setupHands() {
   if (handSetup) return handSetup;
   handStatus = "loading";
   handSetup = (async () => {
     const base = "https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/";
-    if (!window.Hands) await new Promise((resolve, reject) => {
-      const script = document.createElement("script");
-      script.src = `${base}hands.js`;
-      script.crossOrigin = "anonymous";
-      script.onload = resolve;
-      script.onerror = () => { script.remove(); reject(new Error("Hand tracking could not load")); };
-      document.head.append(script);
-    });
+    if (!window.Hands) await loadScript(`${base}hands.js`);
     hands = new window.Hands({ locateFile: file => `${base}${file}` });
-    hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+    hands.setOptions({ maxNumHands: 2, modelComplexity: mobile ? 0 : 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
     hands.onResults(onHands);
     await hands.initialize();
     handStatus = "ready";
@@ -126,12 +185,12 @@ function onHands(result) {
 }
 
 function trackHands(time) {
-  if (!hands || handStatus !== "ready" || handBusy || video.readyState < 2 || video.currentTime === handLastFrame || time - handLastTime < 50) return;
+  if (!hands || handStatus !== "ready" || handBusy || faceBusy || video.readyState < 2 || video.currentTime === handLastFrame || time - handLastTime < (mobile ? 80 : 50)) return;
   handLastFrame = video.currentTime;
   handLastTime = time;
   const generation = handGeneration;
   handResultGeneration = generation;
-  const scale = Math.min(1, 640 / video.videoWidth);
+  const scale = Math.min(1, (mobile ? 480 : 640) / video.videoWidth);
   const width = Math.round(video.videoWidth * scale);
   const height = Math.round(video.videoHeight * scale);
   if (handInput.width !== width || handInput.height !== height) { handInput.width = width; handInput.height = height; }
@@ -209,13 +268,14 @@ function resetFog() {
 
 function fitCanvases() {
   const rect = canvas.getBoundingClientRect();
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(2500000 / Math.max(1, rect.width * rect.height)));
   const width = Math.max(1, Math.round(rect.width * dpr));
   const height = Math.max(1, Math.round(rect.height * dpr));
   if (width === state.width && height === state.height && dpr === state.dpr) return;
   endStroke();
   clearHands();
   const oldMask = document.createElement("canvas");
+  mouth = null;
   if (state.width) {
     oldMask.width = mask.width;
     oldMask.height = mask.height;
@@ -263,13 +323,14 @@ function drawFrame(targetCtx) {
 }
 
 function addFog(strength) {
+  const origin = mouth && performance.now() - mouthSeenAt < 700 ? mouth : { x: state.width / 2, y: state.height * 0.45 };
   const reach = Math.min(state.width, state.height) * 0.43 * (0.6 + strength * 0.7);
   maskCtx.save();
   for (let i = 0; i < 12; i++) {
     const angle = Math.random() * Math.PI * 2;
     const distance = Math.pow(Math.random(), 1.3) * reach;
-    const x = state.width / 2 + Math.cos(angle) * distance * 1.45;
-    const y = state.height * 0.55 + Math.sin(angle) * distance - distance * 0.18;
+    const x = origin.x + Math.cos(angle) * distance * 1.45;
+    const y = origin.y + state.height * 0.1 + Math.sin(angle) * distance - distance * 0.18;
     const radius = reach * (0.16 + Math.random() * 0.26);
     maskCtx.globalAlpha = 0.36 * (0.3 + strength * 0.7) * (0.45 + Math.random() * 0.55);
     maskCtx.drawImage(puff, x - radius, y - radius, radius * 2, radius * 2);
@@ -352,21 +413,54 @@ function setupAudio(stream) {
   state.audioContext = new AudioContextCtor();
   state.analyser = state.audioContext.createAnalyser();
   state.analyser.fftSize = 2048;
-  state.analyser.smoothingTimeConstant = 0.78;
+  state.analyser.smoothingTimeConstant = 0.2;
   state.audioContext.createMediaStreamSource(stream).connect(state.analyser);
-  state.audioData = new Uint8Array(state.analyser.frequencyBinCount);
+  state.audioData = new Float32Array(state.analyser.fftSize);
+  state.spectrum = new Float32Array(state.analyser.frequencyBinCount);
+  breathDetector.reset();
+  stream.getAudioTracks()[0].addEventListener("ended", () => {
+    state.audioContext?.close().catch(() => {});
+    state.audioContext = state.analyser = null;
+    breathDetector.reset();
+    micRetry.hidden = false;
+    if (state.running) setStatus("Microphone disconnected. You can enable it again or use the cloud button.");
+  }, { once: true });
 }
 
-function readBreathLevel() {
+function readBreathLevel(elapsed, blocked) {
   if (!state.analyser) return 0;
-  state.analyser.getByteFrequencyData(state.audioData);
-  const lowEnd = Math.floor(state.audioData.length * 0.08);
-  const highStart = Math.floor(state.audioData.length * 0.12);
-  const highEnd = Math.floor(state.audioData.length * 0.62);
-  let low = 0, high = 0;
-  for (let i = 1; i < lowEnd; i++) low += state.audioData[i];
-  for (let i = highStart; i < highEnd; i++) high += state.audioData[i];
-  return Math.min(1, Math.max(0, (high / (highEnd - highStart) * 1.55 + low / Math.max(1, lowEnd - 1) * 0.45 - 22) / 92));
+  state.analyser.getFloatTimeDomainData(state.audioData);
+  state.analyser.getFloatFrequencyData(state.spectrum);
+  return breathDetector.update(state.audioData, state.spectrum, state.audioContext.sampleRate, elapsed, blocked);
+}
+
+function mediaMessage(error) {
+  return ({
+    NotAllowedError: "Camera access was denied. Allow the camera in your browser's site settings and try again.",
+    NotFoundError: "No camera was found. Connect a camera and try again.",
+    NotReadableError: "Your camera is busy. Close other apps using it and try again.",
+    OverconstrainedError: "This camera could not use the requested settings. Try another camera.",
+    SecurityError: "Open this mirror over HTTPS or localhost to enable the camera."
+  })[error.name] || `Camera unavailable (${error.name}). Try Start again.`;
+}
+
+async function enableMicrophone() {
+  if (!state.running || micRetry.disabled) return;
+  micRetry.disabled = true;
+  const cameraStream = state.stream;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, video: false });
+    if (!state.running || state.stream !== cameraStream) { stream.getTracks().forEach(track => track.stop()); return; }
+    state.micStream?.getTracks().forEach(track => track.stop());
+    state.micStream = stream;
+    await state.audioContext?.close();
+    state.audioContext = state.analyser = null;
+    setupAudio(stream);
+    await state.audioContext?.resume();
+    micRetry.hidden = !state.analyser;
+    setStatus("Microphone ready");
+  } catch (error) { setStatus("Microphone unavailable. Hold the cloud button to fog the glass."); }
+  finally { micRetry.disabled = false; }
 }
 
 async function startMirror() {
@@ -375,14 +469,23 @@ async function startMirror() {
   startButton.disabled = true;
   permissionHint.textContent = "Opening camera and microphone...";
   try {
-    if (!state.stream) state.stream = await navigator.mediaDevices.getUserMedia({
+    if (!state.stream?.getVideoTracks().some(track => track.readyState === "live")) {
+      try { state.stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-    });
+      }); } catch (error) {
+        if (!["NotAllowedError", "NotFoundError", "NotReadableError"].includes(error.name)) throw error;
+        state.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      }
+      state.stream.getVideoTracks()[0].addEventListener("ended", () => {
+        returnToStart(); releaseMedia();
+        permissionHint.textContent = "Camera disconnected. Connect it and try Start again.";
+      }, { once: true });
+    }
     video.srcObject = state.stream;
     await video.play();
     state.videoReady = true;
-    if (!state.audioContext) setupAudio(state.stream);
+    if (!state.audioContext) setupAudio(state.micStream || state.stream);
     await state.audioContext?.resume();
     fitCanvases();
     state.running = true;
@@ -391,15 +494,14 @@ async function startMirror() {
     mirrorControls.hidden = false;
     permissionHint.textContent = "";
     canvas.focus({ preventScroll: true });
-    setStatus("Ready");
-    setupHands();
+    micRetry.hidden = !!state.analyser;
+    breathDetector.reset();
+    setStatus(state.analyser ? "Ready" : "Microphone unavailable. Hold the cloud button to fog the glass.");
+    // These legacy model loaders share startup globals and must initialize in order.
+    setupHands().then(setupFace);
   } catch (error) {
-    state.stream?.getTracks().forEach((track) => track.stop());
-    state.stream = null;
-    state.videoReady = false;
-    state.audioContext?.close().catch(() => {});
-    state.audioContext = state.analyser = null;
-    permissionHint.textContent = `Camera and microphone unavailable (${error.name}). Allow access in your browser, then try Start again.`;
+    releaseMedia();
+    permissionHint.textContent = mediaMessage(error);
   } finally {
     state.starting = false;
     startButton.disabled = false;
@@ -410,7 +512,10 @@ function returnToStart() {
   if (!state.running) return;
   endStroke();
   clearHands();
-  state.running = state.spaceDown = state.debug = false;
+  state.running = state.spaceDown = state.manualFog = state.debug = false;
+  mouth = null;
+  breathDetector.reset();
+  state.audioContext?.suspend().catch(() => {});
   state.fogTime = state.smoothedBreath = 0;
   readouts.hidden = mirrorControls.hidden = true;
   resetFog();
@@ -421,46 +526,51 @@ function returnToStart() {
 
 function render(time) {
   requestAnimationFrame(render);
-  if (!state.running) return;
+  if (!state.running || document.hidden) return;
   fitCanvases();
   const elapsed = Math.min(48, time - state.lastTime);
   state.lastTime = time;
-  state.smoothedBreath += (readBreathLevel() - state.smoothedBreath) * (1 - Math.exp(-elapsed / 84));
   state.fps += (1000 / Math.max(1, elapsed) - state.fps) * 0.08;
+  trackFace(time);
   trackHands(time);
   const gestureActive = animateHands(time, elapsed);
-  const fogging = state.spaceDown || (state.smoothedBreath > 0.34 && state.pointerId === null && !gestureActive);
+  state.smoothedBreath = readBreathLevel(elapsed, state.pointerId !== null || gestureActive || time - state.lastKeyAt < 300);
+  const manual = state.spaceDown || state.manualFog;
+  const fogging = manual || state.smoothedBreath > 0.08;
   if (fogging) {
     state.fogTime += elapsed;
     // Use elapsed time rather than frame count for consistent condensation buildup.
     while (state.fogTime >= 1000 / 30) {
-      addFog(state.spaceDown ? 1 : Math.min(1, (state.smoothedBreath - 0.28) * 1.7));
+      addFog(manual ? 1 : state.smoothedBreath);
       state.fogTime -= 1000 / 30;
     }
   } else state.fogTime = 0;
-  if (state.debug) readouts.textContent = `mic ${state.smoothedBreath.toFixed(3)}  ${fogging ? "FOGGING" : "quiet"}\naudio ${state.audioContext?.state || "unavailable"}  ${Math.round(state.fps)} fps\nhands ${handStatus}  ${[...handTracks.values()].map(track => track.mode).join(", ") || "none"}`;
+  if (state.debug) readouts.textContent = `mic ${breathDetector.rms.toFixed(4)}  gate ${breathDetector.gate.toFixed(4)}  ${fogging ? "FOGGING" : "quiet"}\naudio ${state.audioContext?.state || "unavailable"}  ${Math.round(state.fps)} fps\nhands ${handStatus}  ${[...handTracks.values()].map(track => track.mode).join(", ") || "none"}\nface ${mouth && time - mouthSeenAt < 700 ? "locked" : faceStatus}`;
   drawFrame(ctx);
   if (state.pointerId === null) drawHandMarkers(time);
 }
 
 function captureSnapshot() {
-  if (!state.running) return;
-  const output = document.createElement("canvas");
-  output.width = state.width;
-  output.height = state.height;
-  drawFrame(output.getContext("2d", { alpha: false }));
+  if (!state.running || state.shooting) return;
+  state.shooting = true;
   try {
+    const output = document.createElement("canvas");
+    output.width = state.width;
+    output.height = state.height;
+    drawFrame(output.getContext("2d", { alpha: false }));
     const link = document.createElement("a");
     link.download = `foggy-mirror-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
     link.href = output.toDataURL("image/png");
+    document.body.append(link);
     link.click();
+    link.remove();
     flash.classList.remove("pop");
     void flash.offsetWidth;
     flash.classList.add("pop");
     setStatus("Photo ready. Check your downloads.");
   } catch (error) {
     setStatus(`Could not save photo: ${error.message}`);
-  }
+  } finally { state.shooting = false; }
 }
 
 function pointFromEvent(event) {
@@ -471,7 +581,8 @@ canvas.addEventListener("pointerdown", (event) => {
   if (!state.running || state.pointerId !== null || event.button !== 0) return;
   clearHands();
   state.pointerId = event.pointerId;
-  state.palm = event.shiftKey || event.altKey || (event.pointerType === "touch" && event.width > 48);
+  state.audioContext?.resume().catch(() => {});
+  state.palm = state.broadWipe || event.shiftKey || event.altKey || (event.pointerType === "touch" && event.width > 48);
   canvas.setPointerCapture(event.pointerId);
   strokeTo(pointFromEvent(event));
 });
@@ -486,11 +597,19 @@ canvas.addEventListener("lostpointercapture", () => { state.pointerId = null; st
 startButton.addEventListener("click", startMirror);
 brushSize.addEventListener("input", () => { state.brushRadius = Number(brushSize.value); });
 document.getElementById("shutterButton").addEventListener("click", captureSnapshot);
+micRetry.addEventListener("click", enableMicrophone);
+wipeTool.addEventListener("click", () => { endStroke(); state.broadWipe = !state.broadWipe; wipeTool.setAttribute("aria-pressed", String(state.broadWipe)); });
+fogTool.addEventListener("pointerdown", event => { if (!state.running) return; event.preventDefault(); state.manualFog = true; fogTool.setPointerCapture(event.pointerId); });
+for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) fogTool.addEventListener(type, () => { state.manualFog = false; });
+fogTool.addEventListener("keydown", event => { if (state.running && ["Space", "Enter"].includes(event.code)) { event.preventDefault(); state.manualFog = true; } });
+fogTool.addEventListener("keyup", () => { state.manualFog = false; });
+fogTool.addEventListener("blur", () => { state.manualFog = false; });
 window.addEventListener("resize", fitCanvases);
 window.addEventListener("keydown", (event) => {
   if (!state.running || event.ctrlKey || event.metaKey || event.altKey) return;
   if (event.key === "Escape") { returnToStart(); return; }
   if (event.target.closest("button, input, a")) return;
+  state.lastKeyAt = performance.now();
   if (event.code === "Space") { event.preventDefault(); state.spaceDown = true; }
   else if (!event.repeat) {
     switch (event.key.toLowerCase()) {
@@ -501,12 +620,24 @@ window.addEventListener("keydown", (event) => {
   }
 });
 window.addEventListener("keyup", (event) => { if (event.code === "Space") state.spaceDown = false; });
-window.addEventListener("blur", () => { state.spaceDown = false; endStroke(); clearHands(); });
-window.addEventListener("pagehide", () => {
-  state.stream?.getTracks().forEach((track) => track.stop());
-  state.audioContext?.close().catch(() => {});
-  hands?.close().catch(() => {});
+window.addEventListener("blur", () => { state.spaceDown = state.manualFog = false; endStroke(); clearHands(); });
+document.addEventListener("visibilitychange", () => {
+  state.spaceDown = state.manualFog = false;
+  endStroke(); clearHands(); mouth = null;
+  state.lastTime = performance.now();
+  breathDetector.reset();
+  if (document.hidden) state.audioContext?.suspend().catch(() => {});
+  else if (state.running) state.audioContext?.resume().catch(() => {});
 });
+function releaseMedia() {
+  state.stream?.getTracks().forEach((track) => track.stop());
+  state.micStream?.getTracks().forEach(track => track.stop());
+  state.audioContext?.close().catch(() => {});
+  state.stream = state.micStream = state.audioContext = state.analyser = null;
+  state.videoReady = false;
+  video.srcObject = null;
+}
+window.addEventListener("pagehide", () => { returnToStart(); releaseMedia(); });
 fitCanvases();
 requestAnimationFrame(render);
 if (!navigator.mediaDevices?.getUserMedia) {
