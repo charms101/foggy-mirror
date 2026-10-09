@@ -37,6 +37,162 @@ const state = {
   debug: false, fps: 0, lastTime: performance.now()
 };
 let statusTimer;
+const handTracks = new Map();
+const handInput = document.createElement("canvas");
+const handInputCtx = handInput.getContext("2d");
+let hands = null;
+let handSetup = null;
+let handBusy = false;
+let handLastFrame = -1;
+let handLastTime = 0;
+let handGeneration = 0;
+let handResultGeneration = 0;
+let handStatus = "off";
+
+async function setupHands() {
+  if (handSetup) return handSetup;
+  handStatus = "loading";
+  handSetup = (async () => {
+    const base = "https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/";
+    if (!window.Hands) await new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = `${base}hands.js`;
+      script.crossOrigin = "anonymous";
+      script.onload = resolve;
+      script.onerror = () => { script.remove(); reject(new Error("Hand tracking could not load")); };
+      document.head.append(script);
+    });
+    hands = new window.Hands({ locateFile: file => `${base}${file}` });
+    hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+    hands.onResults(onHands);
+    await hands.initialize();
+    handStatus = "ready";
+  })().catch(error => {
+    handStatus = "unavailable";
+    handSetup = null;
+    hands?.close().catch(() => {});
+    hands = null;
+    if (state.running) setStatus("Hand tracking unavailable. You can still draw with touch or mouse.");
+    console.warn(error.message);
+  });
+  return handSetup;
+}
+
+function clearHands() {
+  handGeneration++;
+  for (const track of handTracks.values()) finishStroke(track);
+  handTracks.clear();
+}
+
+function onHands(result) {
+  if (!state.running || state.pointerId !== null || handResultGeneration !== handGeneration) return;
+  const now = performance.now();
+  const seen = new Set();
+  (result.multiHandLandmarks || []).forEach((landmarks, index) => {
+    const label = result.multiHandedness?.[index]?.label || `hand-${index}`;
+    const key = seen.has(label) ? `${label}-${index}` : label;
+    seen.add(key);
+    const previous = handTracks.get(key);
+    const mode = HandGestures.classify(landmarks, video.videoWidth / video.videoHeight, previous?.mode === "draw");
+    const finger = HandGestures.mirrorPoint(landmarks[8], state.width, state.height, video.videoWidth, video.videoHeight);
+    const palm = [0, 5, 9, 13, 17].reduce((sum, i) => ({ x: sum.x + landmarks[i].x / 5, y: sum.y + landmarks[i].y / 5 }), { x: 0, y: 0 });
+    const target = mode === "wipe" ? HandGestures.mirrorPoint(palm, state.width, state.height, video.videoWidth, video.videoHeight) : finger;
+    let track = previous;
+    if (!track) {
+      track = { x: target.x, y: target.y, tx: target.x, ty: target.y, mode, lastPoint: null, midpoint: null, wipeCarry: 0 };
+      handTracks.set(key, track);
+    }
+    const jumped = Math.hypot(target.x - track.tx, target.y - track.ty) > Math.min(state.width, state.height) * 0.3;
+    if (track.mode !== mode || now - track.seenAt > 180 || jumped) {
+      finishStroke(track);
+      track.x = target.x;
+      track.y = target.y;
+    }
+    track.tx = target.x;
+    track.ty = target.y;
+    track.mode = mode;
+    track.palm = mode === "wipe";
+    const a = HandGestures.mirrorPoint(landmarks[5], state.width, state.height, video.videoWidth, video.videoHeight);
+    const b = HandGestures.mirrorPoint(landmarks[17], state.width, state.height, video.videoWidth, video.videoHeight);
+    track.wipeRadius = Math.max(60, Math.min(100, Math.hypot(a.x - b.x, a.y - b.y) * 1.6 / state.dpr));
+    track.seenAt = now;
+  });
+  for (const [key, track] of handTracks) {
+    if (!seen.has(key)) {
+      finishStroke(track);
+      handTracks.delete(key);
+    }
+  }
+}
+
+function trackHands(time) {
+  if (!hands || handStatus !== "ready" || handBusy || video.readyState < 2 || video.currentTime === handLastFrame || time - handLastTime < 50) return;
+  handLastFrame = video.currentTime;
+  handLastTime = time;
+  const generation = handGeneration;
+  handResultGeneration = generation;
+  const scale = Math.min(1, 640 / video.videoWidth);
+  const width = Math.round(video.videoWidth * scale);
+  const height = Math.round(video.videoHeight * scale);
+  if (handInput.width !== width || handInput.height !== height) { handInput.width = width; handInput.height = height; }
+  handInputCtx.drawImage(video, 0, 0, width, height);
+  handBusy = true;
+  hands.send({ image: handInput }).catch(error => {
+    handStatus = "unavailable";
+    clearHands();
+    setStatus("Hand tracking stopped. Touch and mouse still work.");
+    console.warn(error.message);
+  }).finally(() => {
+    handBusy = false;
+    if (generation !== handGeneration) clearHands();
+  });
+}
+
+function animateHands(time, elapsed) {
+  let active = false;
+  for (const [key, track] of handTracks) {
+    if (time - track.seenAt > 180) { finishStroke(track); handTracks.delete(key); continue; }
+    const ease = 1 - Math.exp(-elapsed / 67);
+    track.x += (track.tx - track.x) * ease;
+    track.y += (track.ty - track.y) * ease;
+    if (track.mode !== "hover" && state.pointerId === null) {
+      strokeTo({ x: track.x, y: track.y }, track);
+      active = true;
+    }
+  }
+  return active;
+}
+
+function drawHandMarkers(time) {
+  ctx.save();
+  ctx.strokeStyle = "rgba(255,255,255,0.5)";
+  ctx.fillStyle = "rgba(255,255,255,0.95)";
+  ctx.lineWidth = 1.4 * state.dpr;
+  for (const track of handTracks.values()) {
+    ctx.save();
+    ctx.translate(track.x, track.y);
+    if (track.mode === "draw") {
+      ctx.rotate(time / 1000 * 0.18);
+      const size = 15 * state.dpr;
+      ctx.shadowColor = "rgba(255,255,255,0.65)";
+      ctx.shadowBlur = size;
+      ctx.beginPath();
+      for (let i = 0; i < 4; i++) {
+        const angle = i * Math.PI / 2;
+        ctx.moveTo(0, 0);
+        ctx.quadraticCurveTo(Math.cos(angle - 0.35) * size * 0.46, Math.sin(angle - 0.35) * size * 0.46, Math.cos(angle) * size, Math.sin(angle) * size);
+        ctx.quadraticCurveTo(Math.cos(angle + 0.35) * size * 0.46, Math.sin(angle + 0.35) * size * 0.46, 0, 0);
+      }
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.arc(0, 0, (track.mode === "wipe" ? track.wipeRadius : 6) * state.dpr, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+}
 
 function setStatus(message) {
   clearTimeout(statusTimer);
@@ -58,6 +214,7 @@ function fitCanvases() {
   const height = Math.max(1, Math.round(rect.height * dpr));
   if (width === state.width && height === state.height && dpr === state.dpr) return;
   endStroke();
+  clearHands();
   const oldMask = document.createElement("canvas");
   if (state.width) {
     oldMask.width = mask.width;
@@ -120,17 +277,17 @@ function addFog(strength) {
   maskCtx.restore();
 }
 
-function strokeTo(point) {
-  const last = state.lastPoint;
+function strokeTo(point, stroke = state) {
+  const last = stroke.lastPoint;
   maskCtx.save();
   maskCtx.globalCompositeOperation = "destination-out";
-  if (state.palm) {
+  if (stroke.palm) {
     // Stamp by distance, so a stationary hand never keeps removing fog.
     if (last) {
       const distance = Math.hypot(point.x - last.x, point.y - last.y);
-      const radius = 82 * state.dpr;
+      const radius = (stroke.wipeRadius || 82) * state.dpr;
       const spacing = radius * 0.5;
-      for (let travel = spacing - state.wipeCarry; travel <= distance; travel += spacing) {
+      for (let travel = spacing - stroke.wipeCarry; travel <= distance; travel += spacing) {
         const t = travel / distance;
         const x = last.x + (point.x - last.x) * t;
         const y = last.y + (point.y - last.y) * t;
@@ -140,7 +297,7 @@ function strokeTo(point) {
         maskCtx.fillStyle = gradient;
         maskCtx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
       }
-      state.wipeCarry = (state.wipeCarry + distance) % spacing;
+      stroke.wipeCarry = (stroke.wipeCarry + distance) % spacing;
     }
   } else {
     const radius = state.brushRadius * state.dpr;
@@ -151,32 +308,38 @@ function strokeTo(point) {
     if (!last) {
       maskCtx.arc(point.x, point.y, radius, 0, Math.PI * 2);
       maskCtx.fill();
-      state.midpoint = point;
+      stroke.midpoint = point;
     } else {
       const mid = { x: (point.x + last.x) / 2, y: (point.y + last.y) / 2 };
-      maskCtx.moveTo(state.midpoint.x, state.midpoint.y);
+      maskCtx.moveTo(stroke.midpoint.x, stroke.midpoint.y);
       maskCtx.quadraticCurveTo(last.x, last.y, mid.x, mid.y);
       maskCtx.stroke();
-      state.midpoint = mid;
+      stroke.midpoint = mid;
     }
   }
   maskCtx.restore();
-  state.lastPoint = point;
+  stroke.lastPoint = point;
 }
 
-function endStroke() {
-  if (state.lastPoint && state.midpoint && !state.palm) {
+function finishStroke(stroke) {
+  if (stroke.lastPoint && stroke.midpoint && !stroke.palm) {
     maskCtx.save();
     maskCtx.globalCompositeOperation = "destination-out";
     maskCtx.strokeStyle = "#000";
     maskCtx.lineWidth = state.brushRadius * state.dpr * 2;
     maskCtx.lineCap = "round";
     maskCtx.beginPath();
-    maskCtx.moveTo(state.midpoint.x, state.midpoint.y);
-    maskCtx.lineTo(state.lastPoint.x, state.lastPoint.y);
+    maskCtx.moveTo(stroke.midpoint.x, stroke.midpoint.y);
+    maskCtx.lineTo(stroke.lastPoint.x, stroke.lastPoint.y);
     maskCtx.stroke();
     maskCtx.restore();
   }
+  stroke.lastPoint = stroke.midpoint = null;
+  stroke.wipeCarry = 0;
+}
+
+function endStroke() {
+  finishStroke(state);
   if (state.pointerId !== null && canvas.hasPointerCapture(state.pointerId)) canvas.releasePointerCapture(state.pointerId);
   state.pointerId = null;
   state.lastPoint = state.midpoint = null;
@@ -229,6 +392,7 @@ async function startMirror() {
     permissionHint.textContent = "";
     canvas.focus({ preventScroll: true });
     setStatus("Ready");
+    setupHands();
   } catch (error) {
     state.stream?.getTracks().forEach((track) => track.stop());
     state.stream = null;
@@ -245,6 +409,7 @@ async function startMirror() {
 function returnToStart() {
   if (!state.running) return;
   endStroke();
+  clearHands();
   state.running = state.spaceDown = state.debug = false;
   state.fogTime = state.smoothedBreath = 0;
   readouts.hidden = mirrorControls.hidden = true;
@@ -262,7 +427,9 @@ function render(time) {
   state.lastTime = time;
   state.smoothedBreath += (readBreathLevel() - state.smoothedBreath) * (1 - Math.exp(-elapsed / 84));
   state.fps += (1000 / Math.max(1, elapsed) - state.fps) * 0.08;
-  const fogging = state.spaceDown || (state.smoothedBreath > 0.34 && state.pointerId === null);
+  trackHands(time);
+  const gestureActive = animateHands(time, elapsed);
+  const fogging = state.spaceDown || (state.smoothedBreath > 0.34 && state.pointerId === null && !gestureActive);
   if (fogging) {
     state.fogTime += elapsed;
     // Use elapsed time rather than frame count for consistent condensation buildup.
@@ -271,8 +438,9 @@ function render(time) {
       state.fogTime -= 1000 / 30;
     }
   } else state.fogTime = 0;
-  if (state.debug) readouts.textContent = `mic ${state.smoothedBreath.toFixed(3)}  ${fogging ? "FOGGING" : "quiet"}\naudio ${state.audioContext?.state || "unavailable"}  ${Math.round(state.fps)} fps`;
+  if (state.debug) readouts.textContent = `mic ${state.smoothedBreath.toFixed(3)}  ${fogging ? "FOGGING" : "quiet"}\naudio ${state.audioContext?.state || "unavailable"}  ${Math.round(state.fps)} fps\nhands ${handStatus}  ${[...handTracks.values()].map(track => track.mode).join(", ") || "none"}`;
   drawFrame(ctx);
+  if (state.pointerId === null) drawHandMarkers(time);
 }
 
 function captureSnapshot() {
@@ -301,6 +469,7 @@ function pointFromEvent(event) {
 }
 canvas.addEventListener("pointerdown", (event) => {
   if (!state.running || state.pointerId !== null || event.button !== 0) return;
+  clearHands();
   state.pointerId = event.pointerId;
   state.palm = event.shiftKey || event.altKey || (event.pointerType === "touch" && event.width > 48);
   canvas.setPointerCapture(event.pointerId);
@@ -332,10 +501,11 @@ window.addEventListener("keydown", (event) => {
   }
 });
 window.addEventListener("keyup", (event) => { if (event.code === "Space") state.spaceDown = false; });
-window.addEventListener("blur", () => { state.spaceDown = false; endStroke(); });
+window.addEventListener("blur", () => { state.spaceDown = false; endStroke(); clearHands(); });
 window.addEventListener("pagehide", () => {
   state.stream?.getTracks().forEach((track) => track.stop());
   state.audioContext?.close().catch(() => {});
+  hands?.close().catch(() => {});
 });
 fitCanvases();
 requestAnimationFrame(render);
