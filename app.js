@@ -14,12 +14,18 @@ const flash = document.getElementById("flash");
 const micRetry = document.getElementById("micRetry");
 const wipeTool = document.getElementById("wipeTool");
 const fogTool = document.getElementById("fogTool");
+const lipstickTool = document.getElementById("lipstickTool");
+const lipstickPalette = document.getElementById("lipstickPalette");
+const lipstickCursor = document.getElementById("lipstickCursor");
+const shadeButtons = [...document.querySelectorAll("[data-shade]")];
 const breathDetector = new BreathDetector();
 const mobile = window.matchMedia?.("(pointer: coarse)").matches || false;
 window.lucide?.createIcons();
 
 const mask = document.createElement("canvas");
 const maskCtx = mask.getContext("2d");
+const lipstick = document.createElement("canvas");
+const lipstickCtx = lipstick.getContext("2d");
 const frost = document.createElement("canvas");
 const frostCtx = frost.getContext("2d");
 const puff = document.createElement("canvas");
@@ -37,12 +43,13 @@ const state = {
   running: false, starting: false, videoReady: false,
   stream: null, micStream: null, audioContext: null, analyser: null, audioData: null, spectrum: null,
   smoothedBreath: 0, spaceDown: false, manualFog: false, fogTime: 0, lastKeyAt: 0,
-  broadWipe: false, shooting: false,
+  broadWipe: false, lipstick: false, shade: LipstickBrush.shades[0], shooting: false,
   brushRadius: 15, pointerId: null, palm: false,
   lastPoint: null, midpoint: null, wipeCarry: 0,
   debug: false, fps: 0, lastTime: performance.now()
 };
 let statusTimer;
+let shadeHover = -1, shadeHoverSince = 0;
 const handTracks = new Map();
 const handInput = document.createElement("canvas");
 const handInputCtx = handInput.getContext("2d");
@@ -141,6 +148,7 @@ function clearHands() {
   handGeneration++;
   for (const track of handTracks.values()) finishStroke(track);
   handTracks.clear();
+  resetShadeHover();
 }
 
 function onHands(result) {
@@ -214,12 +222,54 @@ function animateHands(time, elapsed) {
     const ease = 1 - Math.exp(-elapsed / 67);
     track.x += (track.tx - track.x) * ease;
     track.y += (track.ty - track.y) * ease;
+  }
+  const paletteHands = hoverHandPalette(time);
+  for (const track of handTracks.values()) {
+    if (paletteHands.has(track)) continue;
     if (track.mode !== "hover" && state.pointerId === null) {
       strokeTo({ x: track.x, y: track.y }, track);
       active = true;
     }
   }
   return active;
+}
+
+function resetShadeHover() {
+  shadeHover = -1;
+  shadeHoverSince = 0;
+  for (const button of shadeButtons) {
+    button.classList.remove("is-dwelling");
+    button.style.setProperty("--dwell", "0deg");
+  }
+}
+
+function hoverHandPalette(time) {
+  const over = new Set();
+  let index = -1;
+  if (state.lipstick && state.pointerId === null) {
+    const bounds = shadeButtons.map(button => button.getBoundingClientRect());
+    for (const track of handTracks.values()) {
+      if (track.mode === "wipe") continue;
+      const x = track.x / state.dpr, y = track.y / state.dpr;
+      const hit = bounds.findIndex(rect => x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom);
+      if (hit < 0) continue;
+      finishStroke(track);
+      over.add(track);
+      if (index < 0) index = hit;
+    }
+  }
+  if (index !== shadeHover) {
+    resetShadeHover();
+    shadeHover = index;
+    shadeHoverSince = time;
+  }
+  if (index >= 0) {
+    const progress = Math.min(1, (time - shadeHoverSince) / 700);
+    shadeButtons[index].classList.add("is-dwelling");
+    shadeButtons[index].style.setProperty("--dwell", `${progress * 360}deg`);
+    if (progress === 1 && state.shade !== LipstickBrush.shades[index]) selectShade(index);
+  }
+  return over;
 }
 
 function drawHandMarkers(time) {
@@ -231,6 +281,12 @@ function drawHandMarkers(time) {
     ctx.save();
     ctx.translate(track.x, track.y);
     if (track.mode === "draw") {
+      if (state.lipstick) {
+        ctx.rotate(Math.PI / 6);
+        ctx.drawImage(LipstickBrush.tube(state.shade), -12 * state.dpr, 0, 24 * state.dpr, 64 * state.dpr);
+        ctx.restore();
+        continue;
+      }
       ctx.rotate(time / 1000 * 0.18);
       const size = 15 * state.dpr;
       ctx.shadowColor = "rgba(255,255,255,0.65)";
@@ -274,15 +330,22 @@ function fitCanvases() {
   if (width === state.width && height === state.height && dpr === state.dpr) return;
   endStroke();
   clearHands();
+  lipstickCursor.hidden = true;
   const oldMask = document.createElement("canvas");
+  const oldLipstick = document.createElement("canvas");
   mouth = null;
   if (state.width) {
     oldMask.width = mask.width;
     oldMask.height = mask.height;
     oldMask.getContext("2d").drawImage(mask, 0, 0);
+    oldLipstick.width = lipstick.width;
+    oldLipstick.height = lipstick.height;
+    oldLipstick.getContext("2d").drawImage(lipstick, 0, 0);
   }
   state.width = canvas.width = mask.width = width;
   state.height = canvas.height = mask.height = height;
+  lipstick.width = width;
+  lipstick.height = height;
   state.dpr = dpr;
   // Blur a bounded texture, then upscale it; sharp video and strokes stay full resolution.
   const scale = Math.min(1, 960 / Math.max(width, height));
@@ -290,6 +353,7 @@ function fitCanvases() {
   frost.height = Math.max(1, Math.round(height * scale));
   if (oldMask.width) maskCtx.drawImage(oldMask, 0, 0, width, height);
   else resetFog();
+  if (oldLipstick.width) lipstickCtx.drawImage(oldLipstick, 0, 0, width, height);
 }
 
 function drawMirroredVideo(targetCtx, width, height) {
@@ -320,6 +384,7 @@ function drawFrame(targetCtx) {
   frostCtx.drawImage(mask, 0, 0, frost.width, frost.height);
   frostCtx.globalCompositeOperation = "source-over";
   targetCtx.drawImage(frost, 0, 0, state.width, state.height);
+  targetCtx.drawImage(lipstick, 0, 0);
 }
 
 function addFog(strength) {
@@ -340,8 +405,26 @@ function addFog(strength) {
 
 function strokeTo(point, stroke = state) {
   const last = stroke.lastPoint;
-  maskCtx.save();
-  maskCtx.globalCompositeOperation = "destination-out";
+  if (!last) {
+    stroke.ink = state.lipstick && !stroke.palm;
+    stroke.shade = state.shade;
+    stroke.inkRadius = state.brushRadius * state.dpr;
+  }
+  if (stroke.ink) {
+    if (!last) {
+      LipstickBrush.dab(lipstickCtx, point, stroke.inkRadius * 0.72, stroke.shade, 0);
+      stroke.midpoint = point;
+    } else {
+      const mid = { x: (point.x + last.x) / 2, y: (point.y + last.y) / 2 };
+      LipstickBrush.curve(lipstickCtx, stroke.midpoint, last, mid, stroke.inkRadius, stroke.shade, stroke);
+      stroke.midpoint = mid;
+    }
+    stroke.lastPoint = point;
+    return;
+  }
+  const brushCtx = maskCtx;
+  brushCtx.save();
+  brushCtx.globalCompositeOperation = stroke.ink ? "source-over" : "destination-out";
   if (stroke.palm) {
     // Stamp by distance, so a stationary hand never keeps removing fog.
     if (last) {
@@ -352,51 +435,56 @@ function strokeTo(point, stroke = state) {
         const t = travel / distance;
         const x = last.x + (point.x - last.x) * t;
         const y = last.y + (point.y - last.y) * t;
-        const gradient = maskCtx.createRadialGradient(x, y, radius * 0.4, x, y, radius);
+        const gradient = brushCtx.createRadialGradient(x, y, radius * 0.4, x, y, radius);
         gradient.addColorStop(0, "rgba(0,0,0,0.34)");
         gradient.addColorStop(1, "rgba(0,0,0,0)");
-        maskCtx.fillStyle = gradient;
-        maskCtx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+        brushCtx.fillStyle = gradient;
+        brushCtx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
       }
       stroke.wipeCarry = (stroke.wipeCarry + distance) % spacing;
     }
   } else {
     const radius = state.brushRadius * state.dpr;
-    maskCtx.fillStyle = maskCtx.strokeStyle = "#000";
-    maskCtx.lineWidth = radius * 2;
-    maskCtx.lineCap = maskCtx.lineJoin = "round";
-    maskCtx.beginPath();
+    brushCtx.fillStyle = brushCtx.strokeStyle = stroke.ink ? "#b6376d" : "#000";
+    brushCtx.lineWidth = radius * 2;
+    brushCtx.lineCap = brushCtx.lineJoin = "round";
+    brushCtx.beginPath();
     if (!last) {
-      maskCtx.arc(point.x, point.y, radius, 0, Math.PI * 2);
-      maskCtx.fill();
+      brushCtx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+      brushCtx.fill();
       stroke.midpoint = point;
     } else {
       const mid = { x: (point.x + last.x) / 2, y: (point.y + last.y) / 2 };
-      maskCtx.moveTo(stroke.midpoint.x, stroke.midpoint.y);
-      maskCtx.quadraticCurveTo(last.x, last.y, mid.x, mid.y);
-      maskCtx.stroke();
+      brushCtx.moveTo(stroke.midpoint.x, stroke.midpoint.y);
+      brushCtx.quadraticCurveTo(last.x, last.y, mid.x, mid.y);
+      brushCtx.stroke();
       stroke.midpoint = mid;
     }
   }
-  maskCtx.restore();
+  brushCtx.restore();
   stroke.lastPoint = point;
 }
 
 function finishStroke(stroke) {
-  if (stroke.lastPoint && stroke.midpoint && !stroke.palm) {
-    maskCtx.save();
-    maskCtx.globalCompositeOperation = "destination-out";
-    maskCtx.strokeStyle = "#000";
-    maskCtx.lineWidth = state.brushRadius * state.dpr * 2;
-    maskCtx.lineCap = "round";
-    maskCtx.beginPath();
-    maskCtx.moveTo(stroke.midpoint.x, stroke.midpoint.y);
-    maskCtx.lineTo(stroke.lastPoint.x, stroke.lastPoint.y);
-    maskCtx.stroke();
-    maskCtx.restore();
+  if (stroke.ink && stroke.lastPoint && stroke.midpoint) {
+    LipstickBrush.curve(lipstickCtx, stroke.midpoint, stroke.lastPoint, stroke.lastPoint, stroke.inkRadius, stroke.shade, stroke);
+  } else if (stroke.lastPoint && stroke.midpoint && !stroke.palm) {
+    const brushCtx = maskCtx;
+    brushCtx.save();
+    brushCtx.globalCompositeOperation = stroke.ink ? "source-over" : "destination-out";
+    brushCtx.strokeStyle = stroke.ink ? "#b6376d" : "#000";
+    brushCtx.lineWidth = state.brushRadius * state.dpr * 2;
+    brushCtx.lineCap = "round";
+    brushCtx.beginPath();
+    brushCtx.moveTo(stroke.midpoint.x, stroke.midpoint.y);
+    brushCtx.lineTo(stroke.lastPoint.x, stroke.lastPoint.y);
+    brushCtx.stroke();
+    brushCtx.restore();
   }
   stroke.lastPoint = stroke.midpoint = null;
   stroke.wipeCarry = 0;
+  stroke.ink = false;
+  stroke.inkCarry = 0;
 }
 
 function endStroke() {
@@ -525,6 +613,7 @@ function returnToStart() {
   endStroke();
   clearHands();
   state.running = state.spaceDown = state.manualFog = state.debug = false;
+  lipstickCursor.hidden = true;
   mouth = null;
   breathDetector.reset();
   state.audioContext?.suspend().catch(() => {});
@@ -591,28 +680,67 @@ function pointFromEvent(event) {
   const rect = canvas.getBoundingClientRect();
   return { x: (event.clientX - rect.left) * state.dpr, y: (event.clientY - rect.top) * state.dpr };
 }
+function moveLipstickCursor(event) {
+  lipstickCursor.hidden = !state.running || !state.lipstick || state.broadWipe || (state.pointerId !== null && state.palm) || event.pointerType === "touch";
+  lipstickCursor.style.left = `${event.clientX}px`;
+  lipstickCursor.style.top = `${event.clientY}px`;
+}
 canvas.addEventListener("pointerdown", (event) => {
   if (!state.running || state.pointerId !== null || event.button !== 0) return;
   clearHands();
   state.pointerId = event.pointerId;
   state.audioContext?.resume().catch(() => {});
   state.palm = state.broadWipe || event.shiftKey || event.altKey || (event.pointerType === "touch" && event.width > 48);
+  moveLipstickCursor(event);
+  if (state.palm) lipstickCursor.hidden = true;
   canvas.setPointerCapture(event.pointerId);
   strokeTo(pointFromEvent(event));
 });
 canvas.addEventListener("pointermove", (event) => {
+  moveLipstickCursor(event);
   if (event.pointerId !== state.pointerId) return;
   const samples = event.getCoalescedEvents?.();
   for (const sample of samples?.length ? samples : [event]) strokeTo(pointFromEvent(sample));
 });
 canvas.addEventListener("pointerup", (event) => { if (event.pointerId === state.pointerId) endStroke(); });
 canvas.addEventListener("pointercancel", endStroke);
+canvas.addEventListener("pointerleave", () => { lipstickCursor.hidden = true; });
 canvas.addEventListener("lostpointercapture", () => { state.pointerId = null; state.lastPoint = state.midpoint = null; state.wipeCarry = 0; });
 startButton.addEventListener("click", startMirror);
 brushSize.addEventListener("input", () => { state.brushRadius = Number(brushSize.value); });
 document.getElementById("shutterButton").addEventListener("click", captureSnapshot);
 micRetry.addEventListener("click", enableMicrophone);
-wipeTool.addEventListener("click", () => { endStroke(); state.broadWipe = !state.broadWipe; wipeTool.setAttribute("aria-pressed", String(state.broadWipe)); });
+wipeTool.addEventListener("click", () => {
+  endStroke(); clearHands();
+  state.broadWipe = !state.broadWipe;
+  state.lipstick = false;
+  syncLipstickTool();
+  lipstickTool.setAttribute("aria-pressed", "false");
+  wipeTool.setAttribute("aria-pressed", String(state.broadWipe));
+});
+lipstickTool.addEventListener("click", () => {
+  endStroke(); clearHands();
+  state.lipstick = !state.lipstick;
+  state.broadWipe = false;
+  wipeTool.setAttribute("aria-pressed", "false");
+  syncLipstickTool();
+});
+function syncLipstickTool() {
+  lipstickTool.setAttribute("aria-pressed", String(state.lipstick));
+  canvas.classList.toggle("lipstick-active", state.lipstick && !state.broadWipe);
+  lipstickPalette.hidden = !state.lipstick;
+  lipstickCursor.hidden = true;
+}
+function selectShade(index) {
+  if (!LipstickBrush.shades[index]) return;
+  endStroke(); clearHands();
+  state.shade = LipstickBrush.shades[index];
+  for (const button of shadeButtons) button.setAttribute("aria-pressed", String(Number(button.dataset.shade) === index));
+  lipstickTool.style.setProperty("--lipstick-color", state.shade.color);
+  lipstickCursor.style.setProperty("--lipstick-color", state.shade.color);
+  LipstickBrush.sprite(state.shade);
+}
+for (const button of shadeButtons) button.addEventListener("click", () => selectShade(Number(button.dataset.shade)));
 fogTool.addEventListener("pointerdown", event => { if (!state.running) return; event.preventDefault(); state.manualFog = true; fogTool.setPointerCapture(event.pointerId); });
 for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) fogTool.addEventListener(type, () => { state.manualFog = false; });
 fogTool.addEventListener("keydown", event => { if (state.running && ["Space", "Enter"].includes(event.code)) { event.preventDefault(); state.manualFog = true; } });

@@ -33,27 +33,32 @@ const surfaces = [];
 function surface() {
   const stack = [];
   const context = {
-    globalCompositeOperation: "source-over", erases: 0,
+    globalCompositeOperation: "source-over", erases: 0, paints: 0, images: [],
     save() { stack.push(this.globalCompositeOperation); },
     restore() { this.globalCompositeOperation = stack.pop(); },
-    fill() { if (this.globalCompositeOperation === "destination-out") this.erases++; },
-    stroke() { if (this.globalCompositeOperation === "destination-out") this.erases++; },
+    fill() { if (this.globalCompositeOperation === "destination-out") this.erases++; else this.paints++; },
+    stroke() { if (this.globalCompositeOperation === "destination-out") this.erases++; else this.paints++; },
     fillRect() { if (this.globalCompositeOperation === "destination-out") this.erases++; },
-    clearRect() {}, drawImage() {}, beginPath() {}, arc() {}, moveTo() {}, lineTo() {}, quadraticCurveTo() {},
+    clearRect() {}, drawImage(image) { this.images.push(image); this.paints++; }, beginPath() {}, arc() {}, moveTo() {}, lineTo() {}, quadraticCurveTo() {},
+    translate() {}, rotate() {}, scale() {},
+    createLinearGradient() { return { addColorStop() {} }; },
     createRadialGradient() { return { addColorStop() {} }; }
   };
-  const element = { width: 0, height: 0, getContext: () => context, addEventListener() {},
-    getBoundingClientRect: () => ({ width: 1280, height: 720 }), hasPointerCapture: () => false,
-    classList: { add() {}, remove() {} }, focus() {} };
+  const element = { width: 0, height: 0, events: {}, attributes: {}, style: { setProperty() {} }, getContext: () => context,
+    addEventListener(type, listener) { this.events[type] = listener; },
+    setAttribute(name, value) { this.attributes[name] = value; }, setPointerCapture() {},
+    getBoundingClientRect: () => ({ width: 1280, height: 720, left: 0, top: 0 }), hasPointerCapture: () => false,
+    classList: { add() {}, remove() {}, toggle() {} }, focus() {} };
   surfaces.push({ element, context });
   return element;
 }
 const elements = new Map();
 const sandbox = vm.createContext({
-  document: { getElementById(id) { if (!elements.has(id)) elements.set(id, surface()); return elements.get(id); }, createElement: surface, addEventListener() {} },
+  document: { getElementById(id) { if (!elements.has(id)) elements.set(id, surface()); return elements.get(id); }, createElement: surface, addEventListener() {}, querySelectorAll: () => [] },
   window: { addEventListener() {}, devicePixelRatio: 1 }, navigator: {}, performance: { now: () => 1000 },
   requestAnimationFrame() {}, setTimeout() {}, clearTimeout() {}, HandGestures: { classify, mirrorPoint }, BreathDetector: require("./breath-detector.js"), console
 });
+vm.runInContext(fs.readFileSync(`${__dirname}/lipstick-brush.js`, "utf8"), sandbox);
 vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, "utf8"), sandbox);
 sandbox.pointing = hand([false, true, true, true]);
 sandbox.fist = hand([true, true, true, true]);
@@ -62,7 +67,7 @@ vm.runInContext("state.running = true; video.videoWidth = 1280; video.videoHeigh
 const feed = name => vm.runInContext(`onHands({multiHandLandmarks:[${name}]}); animateHands(1000, 16)`, sandbox);
 feed("pointing");
 assert.equal(vm.runInContext("handTracks.get('hand-0').mode", sandbox), "draw");
-const eraseCount = () => surfaces.reduce((sum, item) => sum + item.context.erases, 0);
+const eraseCount = () => vm.runInContext("maskCtx.erases", sandbox);
 assert.ok(eraseCount() > 0, "Pointing lands a real eraser stroke");
 feed("open");
 const afterRelease = eraseCount();
@@ -81,6 +86,64 @@ assert.equal(vm.runInContext("handTracks.size", sandbox), 0, "Tracking loss clea
 vm.runInContext("clearHands(); onHands({multiHandLandmarks:[pointing]})", sandbox);
 assert.equal(vm.runInContext("handTracks.size", sandbox), 0, "Stale inference results cannot restart a stroke");
 console.log("Hand gestures: classification, crop mapping, erasing, idle gestures, tracking loss, and stale results passed.");
+elements.get("lipstickTool").events.click();
+assert.equal(elements.get("lipstickTool").attributes["aria-pressed"], "true");
+assert.equal(elements.get("lipstickPalette").hidden, false, "Lipstick mode shows side shades");
+const beforeInk = eraseCount();
+vm.runInContext("handResultGeneration = handGeneration", sandbox);
+feed("pointing");
+assert.ok(vm.runInContext("lipstickCtx.paints", sandbox) > 0, "Index finger paints lipstick");
+assert.equal(eraseCount(), beforeInk, "Lipstick drawing leaves fog intact");
+const mirror = elements.get("mirror");
+mirror.events.pointerdown({ button: 0, pointerId: 1, clientX: 100, clientY: 100, pointerType: "mouse" });
+mirror.events.pointermove({ pointerId: 1, clientX: 180, clientY: 160 });
+const inkBeforeRelease = vm.runInContext("lipstickCtx.paints", sandbox);
+mirror.events.pointerup({ pointerId: 1 });
+assert.ok(vm.runInContext("lipstickCtx.paints", sandbox) > inkBeforeRelease, "Touchpad release completes the lipstick stroke");
+assert.equal(vm.runInContext("state.pointerId", sandbox), null);
+const cherryStamps = vm.runInContext("lipstickCtx.images.length", sandbox);
+vm.runInContext("selectShade(3)", sandbox);
+assert.equal(vm.runInContext("state.shade.color", sandbox), "#e33a80");
+assert.equal(vm.runInContext("lipstickCtx.images.length", sandbox), cherryStamps, "Changing shades preserves existing strokes");
+const beforeStationary = vm.runInContext("lipstickCtx.images.length", sandbox);
+vm.runInContext("const testStroke = {}; strokeTo({x:400,y:400}, testStroke); strokeTo({x:400,y:400}, testStroke); strokeTo({x:400,y:400}, testStroke); finishStroke(testStroke)", sandbox);
+assert.equal(vm.runInContext("lipstickCtx.images.length", sandbox), beforeStationary + 1, "Stationary drawing never piles up pigment");
+vm.runInContext("drawFrame(ctx)", sandbox);
+assert.equal(vm.runInContext("ctx.images.at(-1) === lipstick", sandbox), true, "Reflection and photo compositor includes lipstick");
+elements.get("lipstickTool").events.click();
+assert.equal(elements.get("lipstickTool").attributes["aria-pressed"], "false");
+assert.equal(elements.get("lipstickPalette").hidden, true, "Fog brush hides shades");
+mirror.events.pointerdown({ button: 0, pointerId: 2, clientX: 100, clientY: 100, pointerType: "mouse" });
+mirror.events.pointerup({ pointerId: 2 });
+assert.ok(eraseCount() > beforeInk, "Turning lipstick off restores fog erasing");
+elements.get("lipstickTool").events.click();
+elements.get("wipeTool").events.click();
+assert.equal(vm.runInContext("state.lipstick", sandbox), false, "Broad wipe exits lipstick mode");
+assert.equal(elements.get("lipstickTool").attributes["aria-pressed"], "false");
+mirror.getBoundingClientRect = () => ({ width: 900, height: 600 });
+vm.runInContext("fitCanvases()", sandbox);
+assert.equal(vm.runInContext("lipstick.width", sandbox), 900);
+assert.ok(vm.runInContext("lipstickCtx.images.length", sandbox) > 0, "Resize restores the existing lipstick layer");
+mirror.getBoundingClientRect = () => ({ width: 1280, height: 720 });
+vm.runInContext("fitCanvases()", sandbox);
+const paletteFixtures = Array.from({ length: 6 }, (_, index) => {
+  const button = surface();
+  button.dataset = { shade: String(index) };
+  button.getBoundingClientRect = () => ({ left: 1200, right: 1244, top: 200 + index * 48, bottom: 244 + index * 48 });
+  return button;
+});
+sandbox.paletteFixtures = paletteFixtures;
+vm.runInContext("shadeButtons.push(...paletteFixtures); state.lipstick = true; handTracks.set('palette-hand', {x:1220,y:416,mode:'draw',lastPoint:null,midpoint:null,wipeCarry:0})", sandbox);
+const beforeHover = vm.runInContext("lipstickCtx.images.length", sandbox);
+vm.runInContext("hoverHandPalette(1000); hoverHandPalette(1640)", sandbox);
+assert.equal(vm.runInContext("state.shade.color", sandbox), "#e33a80", "Brief palette hover cannot switch shade");
+vm.runInContext("hoverHandPalette(1710)", sandbox);
+assert.equal(vm.runInContext("state.shade.color", sandbox), "#e75a45", "Sustained fingertip hover selects the shade");
+assert.equal(paletteFixtures[4].attributes["aria-pressed"], "true");
+assert.equal(vm.runInContext("lipstickCtx.images.length", sandbox), beforeHover, "Palette hover never paints lipstick");
+assert.equal(vm.runInContext("handTracks.size", sandbox), 0, "Shade changes end old hand strokes");
+vm.runInContext("shadeButtons.splice(0); state.lipstick = false", sandbox);
+console.log("Lipstick: toggle, finger and touchpad drawing, stroke completion, compositing, and fog brush restoration passed.");
 
 async function testMediaAndFace() {
   sandbox.window.Hands = class {

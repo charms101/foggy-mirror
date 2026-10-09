@@ -55,6 +55,23 @@ kbd { display: inline-block; min-width: 22px; margin-right: 7px; padding: 2px 7p
 .toolbar button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #fff; touch-action: none; }
 .toolbar button svg { fill: none; stroke-width: 1.7; }
 .toolbar button:hover, .toolbar button[aria-pressed="true"] { background: rgb(255 255 255 / 20%); }
+#lipstickTool { color: #f2becd; }
+#lipstickTool[aria-pressed="true"] { background: #b6376d; color: #fff; }
+.lipstick-icon { position: relative; display: block; width: 9px; height: 25px; border-radius: 1px 1px 2px 2px; background: linear-gradient(90deg, #0a0a0a, #4a4a4a 32%, #171717 55%, #080808); transform: rotate(30deg); }
+.lipstick-icon::before { content: ""; position: absolute; top: 0; left: 1px; width: 7px; height: 12px; border-radius: 5px 1px 0 0; background: linear-gradient(90deg, rgb(0 0 0 / 28%), rgb(255 255 255 / 24%) 36%, transparent 65%), var(--lipstick-color, #c9142f); }
+.lipstick-icon::after { content: ""; position: absolute; top: 10px; left: 0; width: 9px; height: 6px; background: linear-gradient(90deg, #999, #fff 32%, #aaa 65%, #ddd); }
+.lipstick-cursor { position: absolute; z-index: 2; pointer-events: none; transform: translateX(-50%); }
+.lipstick-cursor .lipstick-icon { width: 24px; height: 64px; transform-origin: 50% 0; transform: rotate(30deg); }
+.lipstick-cursor .lipstick-icon::before { left: 3px; width: 18px; height: 33px; border-radius: 12px 3px 0 0; }
+.lipstick-cursor .lipstick-icon::after { top: 29px; width: 24px; height: 14px; }
+#mirror.lipstick-active { cursor: none; }
+.lipstick-palette { position: absolute; z-index: 3; right: max(18px, env(safe-area-inset-right)); top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 4px; padding: 4px; }
+.shade { position: relative; display: grid; place-items: center; flex: none; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: transparent; }
+.shade::before { content: ""; width: 28px; height: 28px; border-radius: 50%; background: var(--shade); border: 1px solid rgb(255 255 255 / 22%); box-shadow: inset 2px 2px 5px rgb(255 255 255 / 14%), inset -2px -2px 5px rgb(0 0 0 / 22%); }
+.shade[aria-pressed="true"] { outline: 1.5px solid #fff; outline-offset: -3px; }
+.shade:hover { background: rgb(255 255 255 / 15%); }
+.shade.is-dwelling::after { content: ""; position: absolute; inset: 2px; border-radius: 50%; background: conic-gradient(#fff var(--dwell, 0deg), transparent 0); mask: radial-gradient(transparent 64%, #000 67%); -webkit-mask: radial-gradient(transparent 64%, #000 67%); }
+@media (max-height: 430px) { .lipstick-palette { gap: 0; padding-block: 2px; } }
 .toolbar input { appearance: none; -webkit-appearance: none; width: 116px; height: 3px; margin: 0; border-radius: 2px; background: rgb(255 255 255 / 34%); cursor: pointer; }
 .toolbar input::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgb(0 0 0 / 45%); }
 .toolbar input::-moz-range-thumb { width: 13px; height: 13px; border: 0; border-radius: 50%; background: #fff; }
@@ -62,7 +79,7 @@ kbd { display: inline-block; min-width: 22px; margin-right: 7px; padding: 2px 7p
   .shutter { width: 44px; height: 44px; opacity: .8; }
   .toolbar { gap: 7px; padding: 2px 8px; opacity: .8; }
   .toolbar button { width: 44px; height: 44px; }
-  .toolbar input { width: 90px; }
+  .toolbar input { width: 60px; }
   .toolbar input::-webkit-slider-thumb { width: 22px; height: 22px; }
   .toolbar input::-moz-range-thumb { width: 22px; height: 22px; }
 }
