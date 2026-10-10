@@ -68,6 +68,26 @@ let faceResultGeneration = 0;
 let mouth = null, mouthSeenAt = 0;
 const faceInput = document.createElement("canvas");
 const faceInputCtx = faceInput.getContext("2d");
+const stickerTool = document.getElementById("stickerTool");
+const stickerPanel = document.getElementById("stickerPanel");
+const stickerEditor = new StickerKit.Editor({
+  layer: document.getElementById("stickerLayer"), gallery: document.getElementById("stickerGallery"),
+  sizeInput: document.getElementById("stickerSize"), removeButton: document.getElementById("removeSticker"),
+  selectionTools: document.getElementById("stickerSelection"),
+  isEnabled: () => state.running && !state.helpOpen && !state.shooting
+});
+
+function setStickerMode(enabled) {
+  endStroke(); clearHands();
+  state.spaceDown = state.manualFog = false;
+  stickerEditor.setEditing(enabled);
+  stickerPanel.hidden = !enabled;
+  lipstickPalette.hidden = enabled || !state.lipstick;
+  stickerTool.setAttribute("aria-pressed", String(enabled));
+  lipstickCursor.hidden = true;
+}
+stickerTool.addEventListener("click", () => setStickerMode(!stickerEditor.editing));
+document.getElementById("doneStickers").addEventListener("click", () => { setStickerMode(false); stickerTool.focus({ preventScroll: true }); });
 
 function loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -154,7 +174,7 @@ function clearHands() {
 }
 
 function onHands(result) {
-  if (!state.running || state.helpOpen || state.pointerId !== null || handResultGeneration !== handGeneration) return;
+  if (!state.running || state.helpOpen || stickerEditor.editing || state.pointerId !== null || handResultGeneration !== handGeneration) return;
   const now = performance.now();
   const seen = new Set();
   (result.multiHandLandmarks || []).forEach((landmarks, index) => {
@@ -195,6 +215,7 @@ function onHands(result) {
 }
 
 function trackHands(time) {
+  if (stickerEditor.editing) return;
   if (!hands || handStatus !== "ready" || handBusy || faceBusy || video.readyState < 2 || video.currentTime === handLastFrame || time - handLastTime < (mobile ? 80 : 50)) return;
   handLastFrame = video.currentTime;
   handLastTime = time;
@@ -356,6 +377,7 @@ function fitCanvases() {
   if (oldMask.width) maskCtx.drawImage(oldMask, 0, 0, width, height);
   else resetFog();
   if (oldLipstick.width) lipstickCtx.drawImage(oldLipstick, 0, 0, width, height);
+  stickerEditor.resize(width, height);
 }
 
 function drawMirroredVideo(targetCtx, width, height) {
@@ -373,7 +395,7 @@ function drawMirroredVideo(targetCtx, width, height) {
   targetCtx.restore();
 }
 
-function drawFrame(targetCtx) {
+function drawFrame(targetCtx, includeStickers = true) {
   drawMirroredVideo(targetCtx, state.width, state.height);
   frostCtx.clearRect(0, 0, frost.width, frost.height);
   const blur = 18 * state.dpr * frost.width / state.width;
@@ -387,6 +409,7 @@ function drawFrame(targetCtx) {
   frostCtx.globalCompositeOperation = "source-over";
   targetCtx.drawImage(frost, 0, 0, state.width, state.height);
   targetCtx.drawImage(lipstick, 0, 0);
+  if (includeStickers) stickerEditor.draw(targetCtx);
 }
 
 function addFog(strength) {
@@ -613,6 +636,7 @@ async function startMirror() {
 function returnToStart() {
   if (!state.running) return;
   if (state.helpOpen) howToDialog.close();
+  setStickerMode(false);
   endStroke();
   clearHands();
   state.running = state.spaceDown = state.manualFog = state.debug = false;
@@ -639,7 +663,7 @@ function render(time) {
   trackHands(time);
   animateHands(time, elapsed);
   const gestureDrawing = [...handTracks.values()].some(track => track.mode === "draw");
-  state.smoothedBreath = readBreathLevel(elapsed, state.pointerId !== null || gestureDrawing || time - state.lastKeyAt < 300);
+  state.smoothedBreath = readBreathLevel(elapsed, stickerEditor.editing || state.pointerId !== null || gestureDrawing || time - state.lastKeyAt < 300);
   micRetry.hidden = !!state.analyser && state.audioContext?.state === "running";
   const manual = state.spaceDown || state.manualFog;
   const fogging = manual || state.smoothedBreath > 0.08;
@@ -652,7 +676,8 @@ function render(time) {
     }
   } else state.fogTime = 0;
   if (state.debug) readouts.textContent = `mic ${breathDetector.rms.toFixed(4)}  gate ${breathDetector.gate.toFixed(4)}  ${fogging ? "FOGGING" : "quiet"}\naudio ${state.audioContext?.state || "unavailable"}  ${Math.round(state.fps)} fps\nhiss ${breathDetector.hiss.toFixed(2)}  wind ${breathDetector.wind.toFixed(2)}\nhands ${handStatus}  ${[...handTracks.values()].map(track => track.mode).join(", ") || "none"}\nface ${mouth && time - mouthSeenAt < 700 ? "locked" : faceStatus}`;
-  drawFrame(ctx);
+  // Live stickers use the draggable DOM layer; bake them only into saved photos.
+  drawFrame(ctx, false);
   if (state.pointerId === null) drawHandMarkers(time);
 }
 
@@ -661,6 +686,7 @@ function captureSnapshot() {
   state.shooting = true;
   try {
     endStroke(); clearHands();
+    stickerEditor.endDrag();
     const output = document.createElement("canvas");
     output.width = state.width;
     output.height = state.height;
@@ -685,6 +711,7 @@ function clearMirror() {
   endStroke(); clearHands();
   maskCtx.clearRect(0, 0, state.width, state.height);
   lipstickCtx.clearRect(0, 0, state.width, state.height);
+  stickerEditor.clear();
   lipstickCursor.hidden = true;
   setStatus("Mirror cleared");
 }
@@ -694,6 +721,7 @@ function openInstructions() {
   howToDialog.showModal();
   document.getElementById("howToBody").scrollTop = 0;
   state.helpOpen = true;
+  stickerEditor.endDrag();
   endStroke(); clearHands();
   state.spaceDown = state.manualFog = false;
   lipstickCursor.hidden = true;
@@ -718,12 +746,12 @@ function pointFromEvent(event) {
   return { x: (event.clientX - rect.left) * state.dpr, y: (event.clientY - rect.top) * state.dpr };
 }
 function moveLipstickCursor(event) {
-  lipstickCursor.hidden = !state.running || !state.lipstick || state.broadWipe || (state.pointerId !== null && state.palm) || event.pointerType === "touch";
+  lipstickCursor.hidden = !state.running || stickerEditor.editing || !state.lipstick || state.broadWipe || (state.pointerId !== null && state.palm) || event.pointerType === "touch";
   lipstickCursor.style.left = `${event.clientX}px`;
   lipstickCursor.style.top = `${event.clientY}px`;
 }
 canvas.addEventListener("pointerdown", (event) => {
-  if (!state.running || state.helpOpen || state.pointerId !== null || event.button !== 0) return;
+  if (!state.running || state.helpOpen || stickerEditor.editing || state.pointerId !== null || event.button !== 0) return;
   clearHands();
   state.pointerId = event.pointerId;
   state.audioContext?.resume().catch(() => {});
@@ -787,7 +815,7 @@ fogTool.addEventListener("blur", () => { state.manualFog = false; });
 window.addEventListener("resize", fitCanvases);
 window.addEventListener("keydown", (event) => {
   if (!state.running || state.helpOpen || event.ctrlKey || event.metaKey || event.altKey) return;
-  if (event.key === "Escape") { returnToStart(); return; }
+  if (event.key === "Escape") { if (stickerEditor.editing) setStickerMode(false); else returnToStart(); return; }
   if (event.target.closest("button, input, a")) return;
   state.lastKeyAt = performance.now();
   if (event.code === "Space") { event.preventDefault(); state.spaceDown = true; }
@@ -800,10 +828,11 @@ window.addEventListener("keydown", (event) => {
   }
 });
 window.addEventListener("keyup", (event) => { if (event.code === "Space") state.spaceDown = false; });
-window.addEventListener("blur", () => { state.spaceDown = state.manualFog = false; endStroke(); clearHands(); });
+window.addEventListener("blur", () => { state.spaceDown = state.manualFog = false; endStroke(); clearHands(); stickerEditor.endDrag(); });
 document.addEventListener("visibilitychange", () => {
   state.spaceDown = state.manualFog = false;
   endStroke(); clearHands(); mouth = null;
+  stickerEditor.endDrag();
   state.lastTime = performance.now();
   breathDetector.reset();
   if (document.hidden) state.audioContext?.suspend().catch(() => {});

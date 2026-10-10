@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=13">
+    <link rel="stylesheet" href="styles.css?v=14">
   </head>
   <body>
     <main class="app" aria-label="Foggy Mirror">
@@ -16,6 +16,7 @@
       <canvas id="mirror" tabindex="0" aria-label="Interactive foggy mirror"></canvas>
       <p class="status is-hidden" id="status" role="status"></p>
       <div class="mirror-controls" id="mirrorControls" hidden>
+        <div id="stickerLayer" class="sticker-layer" tabindex="-1" aria-label="Placed stickers" aria-hidden="true"></div>
         <div id="lipstickCursor" class="lipstick-cursor" aria-hidden="true" hidden><span class="lipstick-icon"></span></div>
         <div id="lipstickPalette" class="lipstick-palette" role="group" aria-label="Lipstick shades" hidden>
           <button type="button" class="shade" data-shade="0" style="--shade: #c9142f" aria-label="Cherry" aria-pressed="true" title="Cherry"></button>
@@ -26,12 +27,21 @@
           <button type="button" class="shade" data-shade="5" style="--shade: #a2544e" aria-label="Rosewood" aria-pressed="false" title="Rosewood"></button>
         </div>
         <div class="bottom-controls">
+          <section class="sticker-panel" id="stickerPanel" aria-labelledby="stickerTitle" hidden>
+            <header class="sticker-header"><h2 id="stickerTitle">Stickers</h2><button id="doneStickers" type="button" aria-label="Finish sticker editing" title="Done"><i data-lucide="check" aria-hidden="true"></i></button></header>
+            <div class="sticker-gallery" id="stickerGallery"></div>
+            <div class="sticker-selection" id="stickerSelection" hidden>
+              <label for="stickerSize">Size</label><input id="stickerSize" type="range" min="12" max="70" value="30" aria-label="Sticker size">
+              <button id="removeSticker" type="button" aria-label="Remove selected sticker" title="Remove sticker"><i data-lucide="trash-2" aria-hidden="true"></i></button>
+            </div>
+          </section>
           <div class="toolbar" aria-label="Brush controls">
             <i data-lucide="sparkle" aria-hidden="true"></i>
             <input id="brushSize" type="range" min="4" max="40" step="1" value="15" aria-label="Brush size" title="Brush size">
             <button id="lipstickTool" type="button" aria-label="Lipstick" aria-pressed="false" title="Lipstick"><span class="lipstick-icon" aria-hidden="true"></span></button>
             <button id="wipeTool" type="button" aria-label="Broad wipe" aria-pressed="false" title="Broad wipe"><i data-lucide="hand" aria-hidden="true"></i></button>
             <button id="fogTool" type="button" aria-label="Hold to fog" title="Hold to fog"><i data-lucide="cloud" aria-hidden="true"></i></button>
+            <button id="stickerTool" type="button" aria-label="Stickers" aria-pressed="false" aria-controls="stickerPanel" title="Stickers"><i data-lucide="sticker" aria-hidden="true"></i></button>
             <button id="micRetry" type="button" aria-label="Enable microphone" title="Enable microphone" hidden><i data-lucide="mic-off" aria-hidden="true"></i></button>
           </div>
           <div class="mirror-actions">
@@ -57,8 +67,9 @@
           <div><dt>Use lipstick</dt><dd>Click the lipstick tube to turn lipstick on. Draw with your index finger, touch screen, or click-and-drag on your touchpad. Click the tube again to return to fog clearing.</dd></div>
           <div><dt>Choose a shade</dt><dd>While lipstick is on, click a shade in the side palette (at the top in landscape). Or hold your tracked fingertip over a shade until the white ring fills. Existing marks keep their original colors.</dd></div>
           <div><dt>Adjust your brush</dt><dd>Move the slider to change the drawing size. The hand button switches to a broad fog wipe. You can also hold Shift or Alt while dragging to wipe broadly. Wiping fog does not erase lipstick.</dd></div>
-          <div><dt>Clear the glass</dt><dd>Click Clear or press C to remove all fog and lipstick. Blowing again adds fresh fog.</dd></div>
-          <div><dt>Take a photo</dt><dd>Click the red circle or press S. A PNG of your reflection, fog, and lipstick downloads to your device. Buttons, instructions, and drawing cursors are not included.</dd></div>
+          <div><dt>Add stickers</dt><dd>Click the sticker button at the bottom, then choose an image. Drag a placed sticker with your mouse, touchpad, or touch screen to move it. Select it and use Size to resize, or the trash button to remove it. Click the checkmark or press Esc to finish. Reopen Stickers to edit again. Arrow keys move a focused sticker; Delete removes it.</dd></div>
+          <div><dt>Clear the glass</dt><dd>Click Clear or press C to remove all fog, lipstick, and stickers. Blowing again adds fresh fog.</dd></div>
+          <div><dt>Take a photo</dt><dd>Click the red circle or press S. A PNG of your reflection, fog, lipstick, and stickers downloads to your device. Buttons, instructions, selection outlines, and drawing cursors are not included.</dd></div>
           <div><dt>Microphone and readouts</dt><dd>If the microphone button appears, click it to enable or resume audio. Press D to show or hide microphone and tracking readouts. Drawing pauses breath-triggered fog so new fog does not cover your stroke.</dd></div>
         </dl>
         <footer class="how-footer"><p><strong>Keyboard:</strong> Space = fog &middot; S = photo &middot; C = clear &middot; D = readouts</p><p>Esc closes this guide. Outside the guide, Esc returns to the start screen. Drawing pauses while this guide is open.</p></footer>
@@ -84,6 +95,7 @@
     <script src="hand-gestures.js?v=1"></script>
     <script src="breath-detector.js?v=2"></script>
     <script src="lipstick-brush.js?v=3"></script>
-    <script src="app.js?v=14"></script>
+    <script src="sticker-editor.js?v=1"></script>
+    <script src="app.js?v=16"></script>
   </body>
 </html>

@@ -60,7 +60,12 @@ const downloads = [];
 const sandbox = vm.createContext({
   document: { getElementById(id) { if (!elements.has(id)) elements.set(id, surface()); return elements.get(id); }, createElement: surface, addEventListener() {}, querySelectorAll: () => [], body: { append(element) { downloads.push(element); } } },
   window: { addEventListener() {}, devicePixelRatio: 1 }, navigator: {}, performance: { now: () => 1000 },
-  requestAnimationFrame() {}, setTimeout() {}, clearTimeout() {}, HandGestures: { classify, mirrorPoint }, BreathDetector: require("./breath-detector.js"), console
+  requestAnimationFrame() {}, setTimeout() {}, clearTimeout() {}, HandGestures: { classify, mirrorPoint }, BreathDetector: require("./breath-detector.js"),
+  StickerKit: { Editor: class {
+    constructor() { this.editing = false; this.clears = 0; this.draws = 0; }
+    setEditing(value) { this.editing = value; }
+    endDrag() {} resize() {} draw() { this.draws++; } clear() { this.clears++; }
+  } }, console
 });
 vm.runInContext(fs.readFileSync(`${__dirname}/lipstick-brush.js`, "utf8"), sandbox);
 vm.runInContext(fs.readFileSync(`${__dirname}/app.js`, "utf8"), sandbox);
@@ -113,6 +118,9 @@ const beforeStationary = vm.runInContext("lipstickCtx.images.length", sandbox);
 vm.runInContext("const testStroke = {}; strokeTo({x:400,y:400}, testStroke); strokeTo({x:400,y:400}, testStroke); strokeTo({x:400,y:400}, testStroke); finishStroke(testStroke)", sandbox);
 assert.equal(vm.runInContext("lipstickCtx.images.length", sandbox), beforeStationary + 1, "Stationary drawing never piles up pigment");
 vm.runInContext("drawFrame(ctx)", sandbox);
+assert.equal(vm.runInContext("stickerEditor.draws", sandbox), 1, "Photo compositor includes stickers");
+vm.runInContext("drawFrame(ctx, false)", sandbox);
+assert.equal(vm.runInContext("stickerEditor.draws", sandbox), 1, "Live preview does not double-draw DOM stickers");
 assert.equal(vm.runInContext("ctx.images.at(-1) === lipstick", sandbox), true, "Reflection and photo compositor includes lipstick");
 elements.get("lipstickTool").events.click();
 assert.equal(elements.get("lipstickTool").attributes["aria-pressed"], "false");
@@ -182,6 +190,19 @@ assert.equal(elements.get("howToDialog").open, false);
 assert.equal(elements.get("howToButton").focused, true, "Closing restores focus to How to");
 assert.equal(vm.runInContext("breathDetector.warmup", sandbox), 0, "Closing restarts microphone calibration");
 console.log("How to: modal opening, input guards, closing, focus restoration, and calibration reset passed.");
+elements.get("stickerTool").events.click();
+assert.equal(vm.runInContext("stickerEditor.editing", sandbox), true);
+assert.equal(elements.get("stickerPanel").hidden, false);
+mirror.events.pointerdown({ button: 0, pointerId: 4, clientX: 200, clientY: 200, pointerType: "mouse" });
+vm.runInContext("handResultGeneration = handGeneration; onHands({multiHandLandmarks:[pointing]})", sandbox);
+assert.equal(vm.runInContext("state.pointerId", sandbox), null, "Sticker editing cannot start canvas drawing");
+assert.equal(vm.runInContext("handTracks.size", sandbox), 0, "Sticker editing ignores hand drawing");
+elements.get("clearButton").events.click();
+assert.equal(vm.runInContext("stickerEditor.clears", sandbox), 2, "Clear also removes stickers");
+elements.get("doneStickers").events.click();
+assert.equal(vm.runInContext("stickerEditor.editing", sandbox), false);
+assert.equal(elements.get("stickerPanel").hidden, true);
+console.log("Sticker integration: editor toggle, pointer and hand guards, clear, and Done passed.");
 console.log("Lipstick: toggle, finger and touchpad drawing, stroke completion, compositing, and fog brush restoration passed.");
 
 async function testMediaAndFace() {

@@ -46,6 +46,28 @@ kbd { display: inline-block; min-width: 22px; margin-right: 7px; padding: 2px 7p
 
 .status { position: absolute; z-index: 3; top: 0; left: 54px; right: 54px; margin: 0; padding: 16px; text-align: center; font-size: 14px; line-height: 1.6; color: rgb(255 255 255 / 75%); pointer-events: none; }
 .bottom-controls { position: absolute; z-index: 3; left: 50%; bottom: max(18px, env(safe-area-inset-bottom)); transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 14px; max-width: calc(100% - 24px); }
+.sticker-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+.sticker-layer.is-editing { pointer-events: auto; }
+.placed-sticker { position: absolute; display: block; padding: 0; border: 0; background: transparent; pointer-events: none; touch-action: none; user-select: none; -webkit-user-select: none; }
+.placed-sticker img { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.is-editing .placed-sticker { pointer-events: auto; cursor: grab; }
+.is-editing .placed-sticker:active { cursor: grabbing; }
+.placed-sticker[aria-pressed="true"] { outline: 2px dashed #fff; outline-offset: 4px; }
+.sticker-panel { width: min(440px, calc(100vw - 24px)); padding: 14px; border: 1px solid #e8a7bf; border-radius: 8px; color: #762844; background: #fff2b3; box-shadow: 0 4px 24px rgb(0 0 0 / 18%); }
+.sticker-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.sticker-header h2 { margin: 0; font-size: 16px; font-weight: 600; color: #982650; }
+.sticker-panel button:not(.sticker-choice) { display: grid; place-items: center; width: 36px; height: 36px; border: 0; border-radius: 4px; background: #f2becd; color: #762844; }
+.sticker-panel button svg { width: 18px; height: 18px; }
+.sticker-gallery { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; max-height: min(210px, 28dvh); overflow-y: auto; }
+.sticker-choice { display: grid; place-items: center; width: 100%; aspect-ratio: 1; padding: 6px; border: 1px solid rgb(152 38 80 / 12%); border-radius: 4px; background: rgb(255 255 255 / 65%); }
+.sticker-choice img { display: block; max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; }
+.sticker-choice:hover { border-color: #b6376d; background: #fff; }
+.sticker-choice:disabled { opacity: .4; cursor: wait; }
+.sticker-selection { display: flex; align-items: center; gap: 12px; padding-top: 12px; margin-top: 12px; border-top: 1px solid #e8a7bf; }
+.sticker-selection label { font-size: 12px; }
+.sticker-selection input { flex: 1; min-width: 0; accent-color: #b6376d; }
+@media (max-width: 430px) { .toolbar:has(#stickerTool) { gap: 4px; padding-inline: 7px; } .toolbar:has(#stickerTool) > svg { display: none; } .toolbar:has(#stickerTool) input { width: 48px; } .toolbar:has(#micRetry:not([hidden])) input { width: 32px; } }
+@media (max-height: 500px) { .bottom-controls { gap: 8px; } .sticker-panel { padding: 8px; } .sticker-header { margin-bottom: 4px; } .sticker-panel button:not(.sticker-choice) { width: 28px; height: 28px; } .sticker-gallery { grid-template-columns: repeat(6, minmax(0, 1fr)); max-height: 64px; } .sticker-selection { padding-top: 4px; margin-top: 4px; } }
 .mirror-actions { display: grid; grid-template-columns: 86px 60px 86px; align-items: center; gap: 14px; }
 .shutter { display: block; width: 60px; height: 60px; padding: 0; border: 2px solid rgb(255 255 255 / 85%); border-radius: 50%; background: #c9142f; box-shadow: inset 0 0 0 4px #39151b, 0 2px 12px rgb(0 0 0 / 20%); transition: background .2s, transform .1s; }
 .shutter:hover, .shutter:focus-visible { background: #e32c43; }
