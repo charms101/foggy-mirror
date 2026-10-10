@@ -33,13 +33,13 @@ const surfaces = [];
 function surface() {
   const stack = [];
   const context = {
-    globalCompositeOperation: "source-over", erases: 0, paints: 0, images: [],
+    globalCompositeOperation: "source-over", erases: 0, paints: 0, clears: 0, images: [],
     save() { stack.push(this.globalCompositeOperation); },
     restore() { this.globalCompositeOperation = stack.pop(); },
     fill() { if (this.globalCompositeOperation === "destination-out") this.erases++; else this.paints++; },
     stroke() { if (this.globalCompositeOperation === "destination-out") this.erases++; else this.paints++; },
     fillRect() { if (this.globalCompositeOperation === "destination-out") this.erases++; },
-    clearRect() {}, drawImage(image) { this.images.push(image); this.paints++; }, beginPath() {}, arc() {}, moveTo() {}, lineTo() {}, quadraticCurveTo() {},
+    clearRect() { this.clears++; }, drawImage(image) { this.images.push(image); this.paints++; }, beginPath() {}, arc() {}, moveTo() {}, lineTo() {}, quadraticCurveTo() {},
     translate() {}, rotate() {}, scale() {},
     createLinearGradient() { return { addColorStop() {} }; },
     createRadialGradient() { return { addColorStop() {} }; }
@@ -47,14 +47,17 @@ function surface() {
   const element = { width: 0, height: 0, events: {}, attributes: {}, style: { setProperty() {} }, getContext: () => context,
     addEventListener(type, listener) { this.events[type] = listener; },
     setAttribute(name, value) { this.attributes[name] = value; }, setPointerCapture() {},
+    click() { this.clicked = true; }, remove() { this.removed = true; },
+    toDataURL(format) { this.format = format; return "data:image/png;base64,test"; },
     getBoundingClientRect: () => ({ width: 1280, height: 720, left: 0, top: 0 }), hasPointerCapture: () => false,
     classList: { add() {}, remove() {}, toggle() {} }, focus() {} };
   surfaces.push({ element, context });
   return element;
 }
 const elements = new Map();
+const downloads = [];
 const sandbox = vm.createContext({
-  document: { getElementById(id) { if (!elements.has(id)) elements.set(id, surface()); return elements.get(id); }, createElement: surface, addEventListener() {}, querySelectorAll: () => [] },
+  document: { getElementById(id) { if (!elements.has(id)) elements.set(id, surface()); return elements.get(id); }, createElement: surface, addEventListener() {}, querySelectorAll: () => [], body: { append(element) { downloads.push(element); } } },
   window: { addEventListener() {}, devicePixelRatio: 1 }, navigator: {}, performance: { now: () => 1000 },
   requestAnimationFrame() {}, setTimeout() {}, clearTimeout() {}, HandGestures: { classify, mirrorPoint }, BreathDetector: require("./breath-detector.js"), console
 });
@@ -143,6 +146,23 @@ assert.equal(paletteFixtures[4].attributes["aria-pressed"], "true");
 assert.equal(vm.runInContext("lipstickCtx.images.length", sandbox), beforeHover, "Palette hover never paints lipstick");
 assert.equal(vm.runInContext("handTracks.size", sandbox), 0, "Shade changes end old hand strokes");
 vm.runInContext("shadeButtons.splice(0); state.lipstick = false", sandbox);
+const oldFogClears = vm.runInContext("maskCtx.clears", sandbox);
+const oldInkClears = vm.runInContext("lipstickCtx.clears", sandbox);
+elements.get("clearButton").events.click();
+assert.equal(vm.runInContext("maskCtx.clears", sandbox), oldFogClears + 1, "Clear removes all fog");
+assert.equal(vm.runInContext("lipstickCtx.clears", sandbox), oldInkClears + 1, "Clear removes all lipstick");
+assert.equal(vm.runInContext("state.lastPoint", sandbox), null, "Clear ends active strokes before clearing");
+assert.equal(vm.runInContext("handTracks.size", sandbox), 0, "Clear discards hand stroke history");
+elements.get("shutterButton").events.click();
+assert.equal(downloads.length, 1, "Shutter initiates one photo download");
+assert.match(downloads[0].download, /^foggy-mirror-.*\.png$/);
+assert.equal(downloads[0].clicked, true);
+assert.equal(downloads[0].removed, true, "Temporary download link is cleaned up");
+assert.equal(vm.runInContext("state.shooting", sandbox), false, "Shutter becomes available for another photo");
+const photo = surfaces.find(item => item.element.format === "image/png");
+assert.ok(photo, "Photo is encoded as PNG");
+assert.equal(photo.context.images.at(-1), vm.runInContext("lipstick", sandbox), "Photo includes lipstick, not UI");
+console.log("Mirror actions: clearing both layers and composited PNG shutter download passed.");
 console.log("Lipstick: toggle, finger and touchpad drawing, stroke completion, compositing, and fog brush restoration passed.");
 
 async function testMediaAndFace() {

@@ -657,6 +657,7 @@ function captureSnapshot() {
   if (!state.running || state.shooting) return;
   state.shooting = true;
   try {
+    endStroke(); clearHands();
     const output = document.createElement("canvas");
     output.width = state.width;
     output.height = state.height;
@@ -674,6 +675,15 @@ function captureSnapshot() {
   } catch (error) {
     setStatus(`Could not save photo: ${error.message}`);
   } finally { state.shooting = false; }
+}
+
+function clearMirror() {
+  if (!state.running || state.shooting) return;
+  endStroke(); clearHands();
+  maskCtx.clearRect(0, 0, state.width, state.height);
+  lipstickCtx.clearRect(0, 0, state.width, state.height);
+  lipstickCursor.hidden = true;
+  setStatus("Mirror cleared");
 }
 
 function pointFromEvent(event) {
@@ -709,6 +719,7 @@ canvas.addEventListener("lostpointercapture", () => { state.pointerId = null; st
 startButton.addEventListener("click", startMirror);
 brushSize.addEventListener("input", () => { state.brushRadius = Number(brushSize.value); });
 document.getElementById("shutterButton").addEventListener("click", captureSnapshot);
+document.getElementById("clearButton").addEventListener("click", clearMirror);
 micRetry.addEventListener("click", enableMicrophone);
 wipeTool.addEventListener("click", () => {
   endStroke(); clearHands();
@@ -755,7 +766,7 @@ window.addEventListener("keydown", (event) => {
   if (event.code === "Space") { event.preventDefault(); state.spaceDown = true; }
   else if (!event.repeat) {
     switch (event.key.toLowerCase()) {
-      case "c": maskCtx.clearRect(0, 0, state.width, state.height); break;
+      case "c": clearMirror(); break;
       case "s": captureSnapshot(); break;
       case "d": state.debug = !state.debug; readouts.hidden = !state.debug; break;
     }
