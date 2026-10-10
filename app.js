@@ -17,6 +17,8 @@ const fogTool = document.getElementById("fogTool");
 const lipstickTool = document.getElementById("lipstickTool");
 const lipstickPalette = document.getElementById("lipstickPalette");
 const lipstickCursor = document.getElementById("lipstickCursor");
+const howToButton = document.getElementById("howToButton");
+const howToDialog = document.getElementById("howToDialog");
 const shadeButtons = [...document.querySelectorAll("[data-shade]")];
 const breathDetector = new BreathDetector();
 const mobile = window.matchMedia?.("(pointer: coarse)").matches || false;
@@ -40,7 +42,7 @@ puffCtx.fillRect(0, 0, 128, 128);
 
 const state = {
   width: 0, height: 0, dpr: 1,
-  running: false, starting: false, videoReady: false,
+  running: false, starting: false, videoReady: false, helpOpen: false,
   stream: null, micStream: null, audioContext: null, analyser: null, audioData: null, spectrum: null,
   smoothedBreath: 0, spaceDown: false, manualFog: false, fogTime: 0, lastKeyAt: 0,
   broadWipe: false, lipstick: false, shade: LipstickBrush.shades[0], shooting: false,
@@ -152,7 +154,7 @@ function clearHands() {
 }
 
 function onHands(result) {
-  if (!state.running || state.pointerId !== null || handResultGeneration !== handGeneration) return;
+  if (!state.running || state.helpOpen || state.pointerId !== null || handResultGeneration !== handGeneration) return;
   const now = performance.now();
   const seen = new Set();
   (result.multiHandLandmarks || []).forEach((landmarks, index) => {
@@ -610,6 +612,7 @@ async function startMirror() {
 
 function returnToStart() {
   if (!state.running) return;
+  if (state.helpOpen) howToDialog.close();
   endStroke();
   clearHands();
   state.running = state.spaceDown = state.manualFog = state.debug = false;
@@ -627,7 +630,7 @@ function returnToStart() {
 
 function render(time) {
   requestAnimationFrame(render);
-  if (!state.running || document.hidden) return;
+  if (!state.running || state.helpOpen || document.hidden) return;
   fitCanvases();
   const elapsed = Math.min(48, time - state.lastTime);
   state.lastTime = time;
@@ -654,7 +657,7 @@ function render(time) {
 }
 
 function captureSnapshot() {
-  if (!state.running || state.shooting) return;
+  if (!state.running || state.helpOpen || state.shooting) return;
   state.shooting = true;
   try {
     endStroke(); clearHands();
@@ -678,13 +681,37 @@ function captureSnapshot() {
 }
 
 function clearMirror() {
-  if (!state.running || state.shooting) return;
+  if (!state.running || state.helpOpen || state.shooting) return;
   endStroke(); clearHands();
   maskCtx.clearRect(0, 0, state.width, state.height);
   lipstickCtx.clearRect(0, 0, state.width, state.height);
   lipstickCursor.hidden = true;
   setStatus("Mirror cleared");
 }
+
+function openInstructions() {
+  if (!state.running || state.helpOpen) return;
+  howToDialog.showModal();
+  document.getElementById("howToBody").scrollTop = 0;
+  state.helpOpen = true;
+  endStroke(); clearHands();
+  state.spaceDown = state.manualFog = false;
+  lipstickCursor.hidden = true;
+}
+howToButton.addEventListener("click", openInstructions);
+document.getElementById("closeHowTo").addEventListener("click", () => howToDialog.close());
+howToDialog.addEventListener("close", () => {
+  state.helpOpen = false;
+  state.lastTime = performance.now();
+  state.fogTime = 0;
+  breathDetector.reset();
+  howToButton.focus({ preventScroll: true });
+});
+howToDialog.addEventListener("click", event => {
+  if (event.target !== howToDialog) return;
+  const rect = howToDialog.getBoundingClientRect();
+  if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) howToDialog.close();
+});
 
 function pointFromEvent(event) {
   const rect = canvas.getBoundingClientRect();
@@ -696,7 +723,7 @@ function moveLipstickCursor(event) {
   lipstickCursor.style.top = `${event.clientY}px`;
 }
 canvas.addEventListener("pointerdown", (event) => {
-  if (!state.running || state.pointerId !== null || event.button !== 0) return;
+  if (!state.running || state.helpOpen || state.pointerId !== null || event.button !== 0) return;
   clearHands();
   state.pointerId = event.pointerId;
   state.audioContext?.resume().catch(() => {});
@@ -759,7 +786,7 @@ fogTool.addEventListener("keyup", () => { state.manualFog = false; });
 fogTool.addEventListener("blur", () => { state.manualFog = false; });
 window.addEventListener("resize", fitCanvases);
 window.addEventListener("keydown", (event) => {
-  if (!state.running || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (!state.running || state.helpOpen || event.ctrlKey || event.metaKey || event.altKey) return;
   if (event.key === "Escape") { returnToStart(); return; }
   if (event.target.closest("button, input, a")) return;
   state.lastKeyAt = performance.now();

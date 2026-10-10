@@ -48,9 +48,10 @@ function surface() {
     addEventListener(type, listener) { this.events[type] = listener; },
     setAttribute(name, value) { this.attributes[name] = value; }, setPointerCapture() {},
     click() { this.clicked = true; }, remove() { this.removed = true; },
+    showModal() { this.open = true; }, close() { this.open = false; this.events.close?.(); },
     toDataURL(format) { this.format = format; return "data:image/png;base64,test"; },
     getBoundingClientRect: () => ({ width: 1280, height: 720, left: 0, top: 0 }), hasPointerCapture: () => false,
-    classList: { add() {}, remove() {}, toggle() {} }, focus() {} };
+    classList: { add() {}, remove() {}, toggle() {} }, focus() { this.focused = true; } };
   surfaces.push({ element, context });
   return element;
 }
@@ -163,6 +164,24 @@ const photo = surfaces.find(item => item.element.format === "image/png");
 assert.ok(photo, "Photo is encoded as PNG");
 assert.equal(photo.context.images.at(-1), vm.runInContext("lipstick", sandbox), "Photo includes lipstick, not UI");
 console.log("Mirror actions: clearing both layers and composited PNG shutter download passed.");
+elements.get("howToButton").events.click();
+assert.equal(elements.get("howToDialog").open, true, "How to opens a modal guide");
+assert.equal(vm.runInContext("state.helpOpen", sandbox), true);
+const helpFogClears = vm.runInContext("maskCtx.clears", sandbox);
+elements.get("clearButton").events.click();
+elements.get("shutterButton").events.click();
+mirror.events.pointerdown({ button: 0, pointerId: 3, clientX: 200, clientY: 200, pointerType: "mouse" });
+vm.runInContext("handResultGeneration = handGeneration; onHands({multiHandLandmarks:[pointing]})", sandbox);
+assert.equal(vm.runInContext("state.pointerId", sandbox), null, "Guide blocks pointer drawing");
+assert.equal(vm.runInContext("handTracks.size", sandbox), 0, "Guide ignores hand inference results");
+assert.equal(vm.runInContext("maskCtx.clears", sandbox), helpFogClears, "Guide blocks clearing the mirror");
+assert.equal(downloads.length, 1, "Guide blocks photo capture");
+elements.get("closeHowTo").events.click();
+assert.equal(vm.runInContext("state.helpOpen", sandbox), false);
+assert.equal(elements.get("howToDialog").open, false);
+assert.equal(elements.get("howToButton").focused, true, "Closing restores focus to How to");
+assert.equal(vm.runInContext("breathDetector.warmup", sandbox), 0, "Closing restarts microphone calibration");
+console.log("How to: modal opening, input guards, closing, focus restoration, and calibration reset passed.");
 console.log("Lipstick: toggle, finger and touchpad drawing, stroke completion, compositing, and fog brush restoration passed.");
 
 async function testMediaAndFace() {

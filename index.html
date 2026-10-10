@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=11">
+    <link rel="stylesheet" href="styles.css?v=13">
   </head>
   <body>
     <main class="app" aria-label="Foggy Mirror">
@@ -37,11 +37,33 @@
           <div class="mirror-actions">
             <button class="clear-button" id="clearButton" type="button" title="Clear the mirror (C)"><i data-lucide="eraser" aria-hidden="true"></i><span>Clear</span></button>
             <button class="shutter" id="shutterButton" type="button" aria-label="Take photo" title="Take photo (S)"></button>
+            <button class="clear-button" id="howToButton" type="button" aria-haspopup="dialog" aria-controls="howToDialog" title="How to"><span>How to</span></button>
           </div>
         </div>
       </div>
       <pre id="readouts" class="readouts" hidden aria-label="Mirror readouts"></pre>
       <div id="flash" aria-hidden="true"></div>
+      <dialog class="how-dialog" id="howToDialog" aria-labelledby="howToTitle">
+        <header class="how-header">
+          <h2 id="howToTitle">How to</h2>
+          <button id="closeHowTo" class="close-help" type="button" aria-label="Close instructions" title="Close instructions" autofocus><i data-lucide="x" aria-hidden="true"></i></button>
+        </header>
+        <div class="how-body" id="howToBody">
+        <dl class="how-guide">
+          <div><dt>Start the mirror</dt><dd>Press Start and allow camera and microphone access. Your reflection is mirrored. If microphone access is unavailable, the cloud button still works.</dd></div>
+          <div><dt>Fog it up</dt><dd>Stay quiet for a second to calibrate, then blow steadily toward your microphone. Fog gathers near your mouth. You can also hold the cloud button or Space.</dd></div>
+          <div><dt>Write in the fog</dt><dd>With lipstick off, click and drag with your mouse or touchpad, or drag a finger on the screen. Your strokes clear the fog.</dd></div>
+          <div><dt>Draw with your hand</dt><dd>Hold up your index finger with the other fingers curled, then move it to write. Open your hand to stop drawing. Make a fist and move it to wipe a wider area of fog.</dd></div>
+          <div><dt>Use lipstick</dt><dd>Click the lipstick tube to turn lipstick on. Draw with your index finger, touch screen, or click-and-drag on your touchpad. Click the tube again to return to fog clearing.</dd></div>
+          <div><dt>Choose a shade</dt><dd>While lipstick is on, click a shade in the side palette (at the top in landscape). Or hold your tracked fingertip over a shade until the white ring fills. Existing marks keep their original colors.</dd></div>
+          <div><dt>Adjust your brush</dt><dd>Move the slider to change the drawing size. The hand button switches to a broad fog wipe. You can also hold Shift or Alt while dragging to wipe broadly. Wiping fog does not erase lipstick.</dd></div>
+          <div><dt>Clear the glass</dt><dd>Click Clear or press C to remove all fog and lipstick. Blowing again adds fresh fog.</dd></div>
+          <div><dt>Take a photo</dt><dd>Click the red circle or press S. A PNG of your reflection, fog, and lipstick downloads to your device. Buttons, instructions, and drawing cursors are not included.</dd></div>
+          <div><dt>Microphone and readouts</dt><dd>If the microphone button appears, click it to enable or resume audio. Press D to show or hide microphone and tracking readouts. Drawing pauses breath-triggered fog so new fog does not cover your stroke.</dd></div>
+        </dl>
+        <footer class="how-footer"><p><strong>Keyboard:</strong> Space = fog &middot; S = photo &middot; C = clear &middot; D = readouts</p><p>Esc closes this guide. Outside the guide, Esc returns to the start screen. Drawing pauses while this guide is open.</p></footer>
+        </div>
+      </dialog>
       <section class="permission-panel" id="permissionPanel" aria-labelledby="startTitle">
         <div class="start-copy">
           <h1 id="startTitle">Foggy Mirror</h1>
@@ -62,6 +84,6 @@
     <script src="hand-gestures.js?v=1"></script>
     <script src="breath-detector.js?v=2"></script>
     <script src="lipstick-brush.js?v=3"></script>
-    <script src="app.js?v=13"></script>
+    <script src="app.js?v=14"></script>
   </body>
 </html>
